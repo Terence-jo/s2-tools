@@ -41,16 +41,16 @@ func TestRasterBlockToS2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := map[s2.CellID][]float64{
-		s2.CellID(1152921779484753920): {1.0},
-		s2.CellID(1153105397926592512): {2.0},
-		s2.CellID(1921714053521080320): {3.0},
-		s2.CellID(1921892174404780032): {4.0},
+	want := []S2CellData{
+		{s2.CellID(1152921779484753920), []float64{1.0}},
+		{s2.CellID(1153105397926592512), []float64{2.0}},
+		{s2.CellID(1921714053521080320), []float64{3.0}},
+		{s2.CellID(1921892174404780032), []float64{4.0}},
 	}
 
 	// Compare the two
 	if !reflect.DeepEqual(s2Data, want) {
-		t.Errorf("")
+		t.Errorf("got %v, want %v", s2Data, want)
 	}
 }
 
