@@ -24,11 +24,13 @@ type BandWithInfo struct {
 }
 
 // TODO Investigate further possibilities for data structures here.
-// My map of slices implementation is servicable, but feels unwieldy.
+// My map of slices implementation was servicable, but felt unwieldy.
+// slices of this will work a bit better, but still has its challenges.
 type S2CellData struct {
 	cell s2.CellID
 	data float64
 }
+
 type S2Table map[s2.CellID][]float64
 
 type MapFunction func(...float64) float64
@@ -59,7 +61,7 @@ func RasterToS2(path string) (S2Table, error) {
 
 	band := &ds.Bands()[0]
 	bandWithInfo := BandWithInfo{band, origin, xRes, yRes}
-	s2Data, err := IndexBand(bandWithInfo, aggFunc)
+	s2Data, err := indexBand(bandWithInfo, aggFunc)
 	if err != nil {
 		logrus.Error(err)
 		return nil, err
@@ -67,7 +69,7 @@ func RasterToS2(path string) (S2Table, error) {
 	return s2Data, nil
 }
 
-func IndexBand(bandWithInfo BandWithInfo, aggFunc MapFunction) (S2Table, error) {
+func indexBand(bandWithInfo BandWithInfo, aggFunc MapFunction) (S2Table, error) {
 	// Set up a done channel that can signal time to close for the whole pipeline.
 	// Done will close when the pipeline exits, signalling that it is time to abandon
 	// upstream stages. Experiment with and without this.
@@ -75,13 +77,18 @@ func IndexBand(bandWithInfo BandWithInfo, aggFunc MapFunction) (S2Table, error) 
 	defer close(done)
 	var wg sync.WaitGroup
 
+	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(&bandWithInfo, done)
+	// Parallel processing of each block produced above.
 	resChan, idChan := processBlocks(&bandWithInfo, blocks, aggFunc, &wg)
-	// Need to wait for all blocks to finish here to compute unique names.
+	// Need to wait for all blocks to finish here to compute unique IDs.
 	s2Results := <-resChan
 	s2IDs := <-idChan
 	wg.Wait()
-	return s2Data, nil
+
+	uniqueIDs := Unique(s2IDs)
+	aggResults := aggToS2Cell(uniqueIDs, s2Results, aggFunc, &wg)
+	return aggResults, nil
 }
 
 // Produce blocks from a raster band, putting them in a channel to be consumed
@@ -120,7 +127,7 @@ func processBlocks(
 		go func() {
 			defer wg.Done()
 			logrus.Infof("Processing block at %v, %v", block.X0, block.Y0)
-			newData, err := RasterBlockToS2(band, block, aggFunc)
+			newData, err := rasterBlockToS2(band, block, aggFunc)
 			if err != nil {
 				logrus.Error(err)
 			}
@@ -132,7 +139,7 @@ func processBlocks(
 	return results, ids
 }
 
-func RasterBlockToS2(band *BandWithInfo, block godal.Block, aggFunc MapFunction) ([]S2CellData, error) {
+func rasterBlockToS2(band *BandWithInfo, block godal.Block, aggFunc MapFunction) ([]S2CellData, error) {
 	blockOrigin, err := blockOrigin(block, band.XRes, band.Origin)
 	if err != nil {
 		logrus.Error(err)
@@ -162,11 +169,12 @@ func RasterBlockToS2(band *BandWithInfo, block godal.Block, aggFunc MapFunction)
 		cellData := S2CellData{s2Cell, value}
 		s2Data = append(s2Data, cellData)
 	}
-	aggData := aggWithinCells(s2Data, mapFunc)
-	return aggData, nil
+	// TODO: Consider aggregating to cell level here
+	return s2Data, nil
 }
 
-// TODO: Make this a concurrent pipeline stage
+// This doesn't serve a purpose anymore. I need a different function
+// to aggregate across unique IDs.
 func aggWithinCells(s2Data S2Table, fun MapFunction) map[s2.CellID]float64 {
 	out := make(map[s2.CellID]float64, len(s2Data))
 	for cell, data := range s2Data {
