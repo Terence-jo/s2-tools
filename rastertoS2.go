@@ -6,6 +6,9 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// TODO: Make level configurable on command line
+const s2Lvl int = 11
+
 type Point struct {
 	Lat float64
 	Lng float64
@@ -18,7 +21,17 @@ type BandWithInfo struct {
 	YRes   float64
 }
 
-func RasterToS2(path string) (map[s2.CellID][]float64, error) {
+// TODO Investigate further possibilities for data structures here.
+// My map of slices implementation is servicable, but feels unwieldy.
+type S2CellData struct {
+	cell s2.CellID
+	data []float64
+}
+type S2Table map[s2.CellID][]float64
+
+type MapFunction func(...float64) float64
+
+func RasterToS2(path string) (S2Table, error) {
 	godal.RegisterAll()
 
 	ds, err := godal.Open(path)
@@ -34,10 +47,19 @@ func RasterToS2(path string) (map[s2.CellID][]float64, error) {
 	}
 
 	band := &ds.Bands()[0]
+	firstBlock := band.Structure().FirstBlock()
 	bandWithInfo := BandWithInfo{band, origin, xRes, yRes}
-	structure := band.Structure()
+	s2Data, err := IndexBand(bandWithInfo, firstBlock)
+	if err != nil {
+		logrus.Error(err)
+		return nil, err
+	}
+	return s2Data, nil
+}
+
+func IndexBand(bandWithInfo BandWithInfo, firstBlock godal.Block) (S2Table, error) {
 	s2Data := make(map[s2.CellID][]float64)
-	for rasterBlock, ok := structure.FirstBlock(), true; ok; rasterBlock, ok = rasterBlock.Next() {
+	for rasterBlock, ok := firstBlock, true; ok; rasterBlock, ok = rasterBlock.Next() {
 		//TODO: Iterate through blocks with a goroutine. For now just loop.
 		logrus.Infof("Processing block at %v, %v", rasterBlock.X0, rasterBlock.Y0)
 		newData, err := RasterBlockToS2(bandWithInfo, rasterBlock)
@@ -78,13 +100,22 @@ func RasterBlockToS2(band BandWithInfo, block godal.Block) (map[s2.CellID][]floa
 		lng := blockOrigin.Lng + float64(col)*band.XRes
 
 		latLng := s2.LatLngFromDegrees(lat, lng)
-		s2Cell := s2.CellIDFromLatLng(latLng).Parent(11)
+		s2Cell := s2.CellIDFromLatLng(latLng).Parent(s2Lvl)
 		s2Data = appendToS2Map(s2Data, s2Cell, value)
 	}
 	return s2Data, nil
 }
 
-func appendToS2Map(s2Data map[s2.CellID][]float64, s2Cell s2.CellID, values ...float64) map[s2.CellID][]float64 {
+// TODO: Make this a concurrent pipeline stage
+func AggWithinCells(s2Data S2Table, fun MapFunction) map[s2.CellID]float64 {
+	out := make(map[s2.CellID]float64, len(s2Data))
+	for cell, data := range s2Data {
+		out[cell] = fun(data...)
+	}
+	return out
+}
+
+func appendToS2Map(s2Data S2Table, s2Cell s2.CellID, values ...float64) S2Table {
 	oldData, ok := s2Data[s2Cell]
 	if !ok {
 		s2Data[s2Cell] = values
