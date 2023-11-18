@@ -30,7 +30,7 @@ func TestRasterBlockToS2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	band := BandWithInfo{
+	band := BandWithTransform{
 		Band:   &ds.Bands()[0],
 		Origin: origin,
 		XRes:   xRes,
