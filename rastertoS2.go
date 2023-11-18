@@ -10,13 +10,14 @@ import (
 
 // TODO: Make level configurable on command line
 const s2Lvl int = 11
+const numWorkers = 8
 
 type Point struct {
 	Lat float64
 	Lng float64
 }
 
-type BandWithInfo struct {
+type BandWithTransform struct {
 	Band   *godal.Band
 	Origin Point
 	XRes   float64
@@ -60,7 +61,8 @@ func RasterToS2(path string) (S2Table, error) {
 	}
 
 	band := &ds.Bands()[0]
-	bandWithInfo := BandWithInfo{band, origin, xRes, yRes}
+	bandWithInfo := BandWithTransform{band, origin, xRes, yRes}
+
 	s2Data, err := indexBand(bandWithInfo, aggFunc)
 	if err != nil {
 		logrus.Error(err)
@@ -69,7 +71,7 @@ func RasterToS2(path string) (S2Table, error) {
 	return s2Data, nil
 }
 
-func indexBand(bandWithInfo BandWithInfo, aggFunc MapFunction) (S2Table, error) {
+func indexBand(bandWithInfo BandWithTransform, aggFunc MapFunction) (S2Table, error) {
 	// Set up a done channel that can signal time to close for the whole pipeline.
 	// Done will close when the pipeline exits, signalling that it is time to abandon
 	// upstream stages. Experiment with and without this.
@@ -82,19 +84,22 @@ func indexBand(bandWithInfo BandWithInfo, aggFunc MapFunction) (S2Table, error) 
 	// Parallel processing of each block produced above.
 	resChan, idChan := processBlocks(&bandWithInfo, blocks, aggFunc, &wg)
 	// Need to wait for all blocks to finish here to compute unique IDs.
-	s2Results := <-resChan
-	s2IDs := <-idChan
 	wg.Wait()
 
-	uniqueIDs := Unique(s2IDs)
-	aggResults := aggToS2Cell(uniqueIDs, s2Results, aggFunc, &wg)
+	uniqueIDs := Unique(idChan)
+	aggResults := aggToS2Cell(uniqueIDs, resChan, aggFunc, &wg)
 	return aggResults, nil
+}
+
+func blockProcessor(*band BandWithTransform, aggFunc MapFunction) func(<-chan godal.Block, *sync.WaitGroup) (<-chan S2CellData, <-chan s2.CellID) {
+	// TODO: Put processBlocks in here, and call it above after using this closure
+	return func()
 }
 
 // Produce blocks from a raster band, putting them in a channel to be consumed
 // downstream. The production here is happening serially, but there would be
 // very little speedup from parallelizing at this step.
-func genBlocks(band *BandWithInfo, done <-chan struct{}) <-chan godal.Block {
+func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block {
 	out := make(chan godal.Block)
 	firstBlock := band.Band.Structure().FirstBlock()
 	go func() {
@@ -110,36 +115,44 @@ func genBlocks(band *BandWithInfo, done <-chan struct{}) <-chan godal.Block {
 	return out
 }
 
+
+// TODO: Think about implementing the done signal pattern here.
 func processBlocks(
-	band *BandWithInfo,
+	band *BandWithTransform,
 	blocks <-chan godal.Block,
 	aggFunc MapFunction,
 	wg *sync.WaitGroup,
-) (<-chan S2CellData, chan s2.CellID) {
+) (<-chan S2CellData, <-chan s2.CellID) {
 
 	results := make(chan S2CellData)
 	ids := make(chan s2.CellID)
 
-	// TODO: Figure out how to implement a worker pool pattern here.
-	// This could blow-out big time with big rasters.
-	for block := range blocks {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			logrus.Infof("Processing block at %v, %v", block.X0, block.Y0)
-			newData, err := rasterBlockToS2(band, block, aggFunc)
-			if err != nil {
-				logrus.Error(err)
-			}
-			for _, data := range newData {
-				results <- data
-			}
-		}()
+	defer close(results)
+	defer close(ids)
+
+	for i := 0; i < numWorkers; i++ {
+		go indexBlocksParallel(band, blocks, results, aggFunc, wg)
 	}
+
 	return results, ids
 }
 
-func rasterBlockToS2(band *BandWithInfo, block godal.Block, aggFunc MapFunction) ([]S2CellData, error) {
+func indexBlocksParallel(band *BandWithTransform, blocks <-chan godal.Block, results chan S2CellData, aggFunc MapFunction, wg *sync.WaitGroup) {
+	for block := range blocks {
+		wg.Add(1)
+		defer wg.Done()
+		logrus.Infof("Processing block at %v, %v", block.X0, block.Y0)
+		newData, err := rasterBlockToS2(band, block, aggFunc)
+		if err != nil {
+			logrus.Error(err)
+		}
+		for _, data := range newData {
+			results <- data
+		}
+	}
+}
+
+func rasterBlockToS2(band *BandWithTransform, block godal.Block, aggFunc MapFunction) ([]S2CellData, error) {
 	blockOrigin, err := blockOrigin(block, band.XRes, band.Origin)
 	if err != nil {
 		logrus.Error(err)
