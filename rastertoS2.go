@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/airbusgeo/godal"
@@ -36,7 +37,7 @@ type S2Table map[s2.CellID][]float64
 
 type MapFunction func(...float64) float64
 
-func RasterToS2(path string) (S2Table, error) {
+func RasterToS2(path string) ([]S2CellData, error) {
 	godal.RegisterAll()
 
 	// TODO: make aggFunc cmd-configurable
@@ -53,7 +54,9 @@ func RasterToS2(path string) (S2Table, error) {
 		logrus.Error(err)
 		return nil, err
 	}
-	defer ds.Close()
+	defer func() {
+		err = errors.Join(err, ds.Close())
+	}()
 
 	origin, xRes, yRes, err := getOriginAndResolution(ds)
 	if err != nil {
@@ -71,7 +74,7 @@ func RasterToS2(path string) (S2Table, error) {
 	return s2Data, nil
 }
 
-func indexBand(bandWithInfo BandWithTransform, aggFunc MapFunction) (S2Table, error) {
+func indexBand(bandWithInfo BandWithTransform, aggFunc MapFunction) ([]S2CellData, error) {
 	// Set up a done channel that can signal time to close for the whole pipeline.
 	// Done will close when the pipeline exits, signalling that it is time to abandon
 	// upstream stages. Experiment with and without this.
@@ -82,18 +85,15 @@ func indexBand(bandWithInfo BandWithTransform, aggFunc MapFunction) (S2Table, er
 	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(&bandWithInfo, done)
 	// Parallel processing of each block produced above.
-	resChan, idChan := processBlocks(&bandWithInfo, blocks, aggFunc, &wg)
+	processBlocks := createBlockProcessor(bandWithInfo, aggFunc)
+	resch, idch := processBlocks(blocks, &wg)
+
 	// Need to wait for all blocks to finish here to compute unique IDs.
 	wg.Wait()
 
-	uniqueIDs := Unique(idChan)
-	aggResults := aggToS2Cell(uniqueIDs, resChan, aggFunc, &wg)
+	uniqueIDs := Unique(idch)
+	aggResults := aggToS2Cell(uniqueIDs, resch, aggFunc, &wg)
 	return aggResults, nil
-}
-
-func blockProcessor(*band BandWithTransform, aggFunc MapFunction) func(<-chan godal.Block, *sync.WaitGroup) (<-chan S2CellData, <-chan s2.CellID) {
-	// TODO: Put processBlocks in here, and call it above after using this closure
-	return func()
 }
 
 // Produce blocks from a raster band, putting them in a channel to be consumed
@@ -115,44 +115,53 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 	return out
 }
 
+// TODO: Think about implementing the done signal pattern here. Also, consider
+// whether aggFunc needs to be passed down to block level. Check performance
+// with and without.
+func createBlockProcessor(band BandWithTransform, aggFunc MapFunction) func(<-chan godal.Block, *sync.WaitGroup) (<-chan S2CellData, <-chan s2.CellID) {
+	// TODO: Put processBlocks in here, and call it above after using this closure
+	return func(blocks <-chan godal.Block, wg *sync.WaitGroup) (<-chan S2CellData, <-chan s2.CellID) {
+		results := make(chan S2CellData)
+		ids := make(chan s2.CellID)
 
-// TODO: Think about implementing the done signal pattern here.
-func processBlocks(
-	band *BandWithTransform,
-	blocks <-chan godal.Block,
-	aggFunc MapFunction,
-	wg *sync.WaitGroup,
-) (<-chan S2CellData, <-chan s2.CellID) {
+		defer close(results)
+		defer close(ids)
 
-	results := make(chan S2CellData)
-	ids := make(chan s2.CellID)
+		for i := 0; i < numWorkers; i++ {
+			go indexBlocksParallel(band, blocks, results, ids, aggFunc, wg)
+		}
 
-	defer close(results)
-	defer close(ids)
-
-	for i := 0; i < numWorkers; i++ {
-		go indexBlocksParallel(band, blocks, results, aggFunc, wg)
+		return results, ids
 	}
-
-	return results, ids
 }
 
-func indexBlocksParallel(band *BandWithTransform, blocks <-chan godal.Block, results chan S2CellData, aggFunc MapFunction, wg *sync.WaitGroup) {
+// TODO: Tidy this function signature. This is too many params.
+func indexBlocksParallel(band BandWithTransform, blocks <-chan godal.Block, results chan S2CellData, ids chan s2.CellID, aggFunc MapFunction, wg *sync.WaitGroup) (errs chan error) {
 	for block := range blocks {
-		wg.Add(1)
-		defer wg.Done()
-		logrus.Infof("Processing block at %v, %v", block.X0, block.Y0)
-		newData, err := rasterBlockToS2(band, block, aggFunc)
-		if err != nil {
-			logrus.Error(err)
-		}
-		for _, data := range newData {
-			results <- data
-		}
+		errs = indexBlock(band, wg, block, aggFunc, errs, results, ids)
 	}
+	return errs
 }
 
-func rasterBlockToS2(band *BandWithTransform, block godal.Block, aggFunc MapFunction) ([]S2CellData, error) {
+func indexBlock(band BandWithTransform, wg *sync.WaitGroup, block godal.Block, aggFunc MapFunction, errs chan error, results chan S2CellData, ids chan s2.CellID) chan error {
+	wg.Add(1)
+	defer wg.Done()
+	logrus.Infof("Processing block at %v, %v", block.X0, block.Y0)
+	newData, err := rasterBlockToS2(band, block, aggFunc)
+	if err != nil {
+		logrus.Error(err)
+		errs <- err
+	}
+	for _, data := range newData {
+		results <- data
+	}
+	for _, data := range newData {
+		ids <- data.cell
+	}
+	return errs
+}
+
+func rasterBlockToS2(band BandWithTransform, block godal.Block, aggFunc MapFunction) ([]S2CellData, error) {
 	blockOrigin, err := blockOrigin(block, band.XRes, band.Origin)
 	if err != nil {
 		logrus.Error(err)
