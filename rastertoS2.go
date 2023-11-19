@@ -35,12 +35,12 @@ type S2CellData struct {
 
 type S2Table map[s2.CellID][]float64
 
-type MapFunction func(...float64) float64
+type ReduceFunction func(...float64) float64
 
 func RasterToS2(path string) ([]S2CellData, error) {
 	godal.RegisterAll()
 
-	// TODO: make aggFunc cmd-configurable
+	// TODO: make aggFunc cmd-line-configurable
 	aggFunc := func(inData ...float64) float64 {
 		var sum float64
 		for _, val := range inData {
@@ -74,7 +74,7 @@ func RasterToS2(path string) ([]S2CellData, error) {
 	return s2Data, nil
 }
 
-func indexBand(bandWithInfo BandWithTransform, aggFunc MapFunction) ([]S2CellData, error) {
+func indexBand(bandWithInfo BandWithTransform, aggFunc ReduceFunction) ([]S2CellData, error) {
 	// Set up a done channel that can signal time to close for the whole pipeline.
 	// Done will close when the pipeline exits, signalling that it is time to abandon
 	// upstream stages. Experiment with and without this.
@@ -118,7 +118,7 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 // TODO: Think about implementing the done signal pattern here. Also, consider
 // whether aggFunc needs to be passed down to block level. Check performance
 // with and without.
-func createBlockProcessor(band BandWithTransform, aggFunc MapFunction) func(<-chan godal.Block, *sync.WaitGroup) (<-chan S2CellData, <-chan s2.CellID) {
+func createBlockProcessor(band BandWithTransform, aggFunc ReduceFunction) func(<-chan godal.Block, *sync.WaitGroup) (<-chan S2CellData, <-chan s2.CellID) {
 	// TODO: Put processBlocks in here, and call it above after using this closure
 	return func(blocks <-chan godal.Block, wg *sync.WaitGroup) (<-chan S2CellData, <-chan s2.CellID) {
 		results := make(chan S2CellData)
@@ -136,14 +136,14 @@ func createBlockProcessor(band BandWithTransform, aggFunc MapFunction) func(<-ch
 }
 
 // TODO: Tidy this function signature. This is too many params.
-func indexBlocksParallel(band BandWithTransform, blocks <-chan godal.Block, results chan S2CellData, ids chan s2.CellID, aggFunc MapFunction, wg *sync.WaitGroup) (errs chan error) {
+func indexBlocksParallel(band BandWithTransform, blocks <-chan godal.Block, results chan S2CellData, ids chan s2.CellID, aggFunc ReduceFunction, wg *sync.WaitGroup) (errs chan error) {
 	for block := range blocks {
 		errs = indexBlock(band, wg, block, aggFunc, errs, results, ids)
 	}
 	return errs
 }
 
-func indexBlock(band BandWithTransform, wg *sync.WaitGroup, block godal.Block, aggFunc MapFunction, errs chan error, results chan S2CellData, ids chan s2.CellID) chan error {
+func indexBlock(band BandWithTransform, wg *sync.WaitGroup, block godal.Block, aggFunc ReduceFunction, errs chan error, results chan S2CellData, ids chan s2.CellID) chan error {
 	wg.Add(1)
 	defer wg.Done()
 	logrus.Infof("Processing block at %v, %v", block.X0, block.Y0)
@@ -161,7 +161,7 @@ func indexBlock(band BandWithTransform, wg *sync.WaitGroup, block godal.Block, a
 	return errs
 }
 
-func rasterBlockToS2(band BandWithTransform, block godal.Block, aggFunc MapFunction) ([]S2CellData, error) {
+func rasterBlockToS2(band BandWithTransform, block godal.Block, aggFunc ReduceFunction) ([]S2CellData, error) {
 	blockOrigin, err := blockOrigin(block, band.XRes, band.Origin)
 	if err != nil {
 		logrus.Error(err)
@@ -197,7 +197,7 @@ func rasterBlockToS2(band BandWithTransform, block godal.Block, aggFunc MapFunct
 
 // This doesn't serve a purpose anymore. I need a different function
 // to aggregate across unique IDs.
-func aggWithinCells(s2Data S2Table, fun MapFunction) map[s2.CellID]float64 {
+func aggWithinCells(s2Data S2Table, fun ReduceFunction) map[s2.CellID]float64 {
 	out := make(map[s2.CellID]float64, len(s2Data))
 	for cell, data := range s2Data {
 		out[cell] = fun(data...)
