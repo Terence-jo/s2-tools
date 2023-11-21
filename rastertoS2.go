@@ -151,24 +151,24 @@ func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) (<-chan S
 // TODO: Tidy this function signature. This is too many params.
 func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<- S2CellData, idCh chan<- s2.CellID, wg *sync.WaitGroup) {
 	logrus.Debug("Entered indexBlocks")
+	var blocksData []S2CellData
 	for block := range blocks {
 		logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
-		wg.Add(1)
 		newData, err := rasterBlockToS2(band, block)
 		if err != nil {
 			return
 		}
-		// Consider just passing these channels into rasterBlockToS2, avoiding the extra range
-		go func() {
-			for _, data := range newData {
-				resCh <- data
-				idCh <- data.cell
-			}
-			wg.Done()
-			logrus.Debug("Exited channel write")
-		}()
+		blocksData = append(blocksData, newData...)
 	}
-	wg.Done()
+	// Consider just passing these channels into rasterBlockToS2, avoiding the extra range
+	go func() {
+		for _, data := range blocksData {
+			resCh <- data
+			idCh <- data.cell
+		}
+		wg.Done()
+		logrus.Debug("Exited channel write")
+	}()
 	logrus.Debug("Exited indexBlocks")
 }
 
