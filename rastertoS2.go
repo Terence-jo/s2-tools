@@ -83,20 +83,22 @@ func indexBand(bandWithInfo BandWithTransform, aggFunc ReduceFunction) ([]S2Cell
 	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(&bandWithInfo, done)
 	// Parallel processing of each block produced above.
-	resCh, idCh := processBlocks(&bandWithInfo, blocks, done)
+	resCh, _ := processBlocks(&bandWithInfo, blocks)
 
 	// Because it just uses the seen map to deduplicate, this doesn't need the full set of
 	// cells to be passed in. It can just consume the channel as it comes in.
-	uniqueIDCh := Unique(idCh)
+	resMap := GroupByCell(resCh)
 
 	var aggResults []S2CellData
 	wg.Add(numWorkers)
 	for i := 0; i < numWorkers; i++ {
 		go func() {
+			logrus.Debug("Entered aggWorker")
 			defer wg.Done()
-			for cellID := range uniqueIDCh {
-				aggResults = append(aggResults, aggToS2Cell(cellID, resCh, aggFunc))
+			for cellID := range resMap {
+				aggResults = append(aggResults, aggToS2Cell(cellID, resMap, aggFunc))
 			}
+			logrus.Debug("Exited aggWorker")
 		}()
 	}
 
@@ -129,7 +131,7 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 // TODO: Think about implementing the done signal pattern here. Also, consider
 // whether aggFunc needs to be passed down to block level. Check performance
 // with and without.
-func processBlocks(band *BandWithTransform, blocks <-chan godal.Block, done <-chan struct{}) (chan S2CellData, <-chan s2.CellID) {
+func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) (chan S2CellData, <-chan s2.CellID) {
 	// TODO: Put processBlocks in here, and call it above after using this closure
 	logrus.Debug("Entered blockProcessor")
 	resCh := make(chan S2CellData)
@@ -138,7 +140,7 @@ func processBlocks(band *BandWithTransform, blocks <-chan godal.Block, done <-ch
 
 	wg.Add(numWorkers)
 	for i := 0; i < numWorkers; i++ {
-		go indexBlocks(band, blocks, resCh, idCh, &wg)
+		go indexBlocks(band, blocks, resCh, &wg)
 	}
 
 	go func() {
@@ -152,7 +154,7 @@ func processBlocks(band *BandWithTransform, blocks <-chan godal.Block, done <-ch
 }
 
 // TODO: Tidy this function signature. This is too many params.
-func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<- S2CellData, idCh chan<- s2.CellID, wg *sync.WaitGroup) {
+func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<- S2CellData, wg *sync.WaitGroup) {
 	logrus.Debug("Entered indexBlocks")
 	var blocksData []S2CellData
 	for block := range blocks {
@@ -165,8 +167,7 @@ func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<
 	}
 	// Consider just passing these channels into rasterBlockToS2, avoiding the extra range
 	go func() {
-		for _, data := range blocksData { // This is only firing 8 times -> numWorkers
-			idCh <- data.cell
+		for _, data := range blocksData {
 			resCh <- data
 		}
 		wg.Done()
@@ -211,39 +212,36 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, 
 	return s2Data, nil
 }
 
-func aggToS2Cell(cellID s2.CellID, resCh chan S2CellData, aggFunc ReduceFunction) S2CellData {
+func aggToS2Cell(cellID s2.CellID, resMap map[s2.CellID][]float64, aggFunc ReduceFunction) S2CellData {
 	// TODO: Verify the validity of this solution (thanks copilot). It seems reasonable overall, but a little weird in places.
-	logrus.Debug("Entered aggToS2Cell")
-	var values []float64
 
-	go func() {
-		for s2Cell := range resCh {
-			if s2Cell.cell == cellID {
-				values = append(values, s2Cell.data)
-			} else {
-				resCh <- s2Cell
-			}
-		}
-	}()
+	values, ok := resMap[cellID]
+	if !ok {
+		logrus.Debugf("No values found for cell %v", cellID)
+		return S2CellData{cellID, 0}
+	}
 
-	logrus.Debug("Exited aggToS2Cell")
 	return S2CellData{cellID, aggFunc(values...)}
 }
 
-func Unique(in <-chan s2.CellID) <-chan s2.CellID {
-	logrus.Debug("Entered Unique")
-	out := make(chan s2.CellID, 1000)
+func GroupByCell(resCh <-chan S2CellData) map[s2.CellID][]float64 {
+	logrus.Debug("Entered GroupByCell")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	out := make(map[s2.CellID][]float64)
 	go func() {
-		defer close(out)
-		seen := make(map[s2.CellID]struct{})
-		for cell := range in {
-			if _, ok := seen[cell]; !ok {
-				seen[cell] = struct{}{}
-				out <- cell
+		defer wg.Done()
+		for cellData := range resCh {
+			if _, ok := out[cellData.cell]; !ok {
+				out[cellData.cell] = []float64{cellData.data}
+			} else {
+				out[cellData.cell] = append(out[cellData.cell], cellData.data)
 			}
 		}
+		return
 	}()
-	logrus.Debug("Exited Unique")
+	wg.Wait()
+	logrus.Debug("Exited GroupByCell")
 	return out
 }
 
