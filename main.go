@@ -29,7 +29,10 @@ func main() {
 		logrus.Error(err)
 		return
 	}
-	for _, cellData := range s2Data {
+	for i, cellData := range s2Data {
+		if i%1000 == 0 {
+			logrus.Infof("Writing cell %v", i)
+		}
 		if _, err := f.WriteString(fmt.Sprintf("%v,%v\n", int64(cellData.cell), cellData.data)); err != nil {
 			logrus.Error(err)
 			return
