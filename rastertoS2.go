@@ -79,7 +79,6 @@ func indexBand(bandWithInfo BandWithTransform, aggFunc ReduceFunction) ([]S2Cell
 	done := make(chan struct{})
 	defer close(done)
 	var wg sync.WaitGroup
-	wg.Add(numWorkers)
 
 	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(&bandWithInfo, done)
@@ -114,6 +113,7 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 	blocks := make(chan godal.Block)
 	firstBlock := band.Band.Structure().FirstBlock()
 	go func() {
+		defer close(blocks)
 		for block, ok := firstBlock, true; ok; block, ok = block.Next() {
 			select {
 			case blocks <- block:
@@ -121,7 +121,6 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 				return
 			}
 		}
-		close(blocks)
 	}()
 	logrus.Debug("Exited genBlocks")
 	return blocks
@@ -133,13 +132,13 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 func processBlocks(band *BandWithTransform, blocks <-chan godal.Block, done <-chan struct{}) (chan S2CellData, <-chan s2.CellID) {
 	// TODO: Put processBlocks in here, and call it above after using this closure
 	logrus.Debug("Entered blockProcessor")
-	resCh := make(chan S2CellData, 100)
-	idCh := make(chan s2.CellID, 100)
+	resCh := make(chan S2CellData)
+	idCh := make(chan s2.CellID)
 	var wg sync.WaitGroup
 
 	wg.Add(numWorkers)
 	for i := 0; i < numWorkers; i++ {
-		go indexBlocks(band, blocks, resCh, idCh, done, &wg)
+		go indexBlocks(band, blocks, resCh, idCh, &wg)
 	}
 
 	go func() {
@@ -153,7 +152,7 @@ func processBlocks(band *BandWithTransform, blocks <-chan godal.Block, done <-ch
 }
 
 // TODO: Tidy this function signature. This is too many params.
-func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<- S2CellData, idCh chan<- s2.CellID, done <-chan struct{}, wg *sync.WaitGroup) {
+func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<- S2CellData, idCh chan<- s2.CellID, wg *sync.WaitGroup) {
 	logrus.Debug("Entered indexBlocks")
 	var blocksData []S2CellData
 	for block := range blocks {
@@ -166,17 +165,9 @@ func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<
 	}
 	// Consider just passing these channels into rasterBlockToS2, avoiding the extra range
 	go func() {
-		for _, data := range blocksData {
-			select {
-			case idCh <- data.cell:
-			case <-done:
-				return
-			}
-			select {
-			case resCh <- data:
-			case <-done:
-				return
-			}
+		for _, data := range blocksData { // This is only firing 8 times -> numWorkers
+			idCh <- data.cell
+			resCh <- data
 		}
 		wg.Done()
 		logrus.Debug("Exited channel write")
@@ -185,7 +176,7 @@ func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<
 }
 
 func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, error) {
-	logrus.Debug("Entered rasterBlockToS2")
+	//logrus.Debug("Entered rasterBlockToS2")
 	blockOrigin, err := blockOrigin(block, band.XRes, band.Origin)
 	if err != nil {
 		logrus.Error(err)
@@ -216,7 +207,7 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, 
 		s2Data = append(s2Data, cellData)
 	}
 	// TODO: Consider aggregating to cell level here, but check performance.
-	logrus.Debug("Exited rasterBlockToS2")
+	//logrus.Debug("Exited rasterBlockToS2")
 	return s2Data, nil
 }
 
@@ -241,7 +232,7 @@ func aggToS2Cell(cellID s2.CellID, resCh chan S2CellData, aggFunc ReduceFunction
 
 func Unique(in <-chan s2.CellID) <-chan s2.CellID {
 	logrus.Debug("Entered Unique")
-	out := make(chan s2.CellID, 100)
+	out := make(chan s2.CellID, 1000)
 	go func() {
 		defer close(out)
 		seen := make(map[s2.CellID]struct{})
