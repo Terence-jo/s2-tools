@@ -25,9 +25,6 @@ type BandWithTransform struct {
 	YRes   float64
 }
 
-// S2CellData TODO Investigate further possibilities for data structures here.
-// My map of slices implementation was serviceable, but felt unwieldy.
-// slices of this will work a bit better, but still has its challenges.
 type S2CellData struct {
 	cell s2.CellID
 	data float64
@@ -89,18 +86,8 @@ func indexBand(bandWithInfo BandWithTransform, aggFunc ReduceFunction) ([]S2Cell
 	// cells to be passed in. It can just consume the channel as it comes in.
 	resMap := GroupByCell(resCh)
 
-	var aggResults []S2CellData
-	wg.Add(numWorkers)
-	for i := 0; i < numWorkers; i++ {
-		go func() {
-			logrus.Debug("Entered aggWorker")
-			defer wg.Done()
-			for cellID := range resMap {
-				aggResults = append(aggResults, aggToS2Cell(cellID, resMap, aggFunc))
-			}
-			logrus.Debug("Exited aggWorker")
-		}()
-	}
+	// TODO: Figure out how to parallelize the aggregation step. This is the bottleneck.
+	aggResults := aggCellResults(resMap, aggFunc)
 
 	wg.Wait()
 	return aggResults, nil
@@ -177,7 +164,6 @@ func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<
 }
 
 func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, error) {
-	//logrus.Debug("Entered rasterBlockToS2")
 	blockOrigin, err := blockOrigin(block, band.XRes, band.Origin)
 	if err != nil {
 		logrus.Error(err)
@@ -208,13 +194,20 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, 
 		s2Data = append(s2Data, cellData)
 	}
 	// TODO: Consider aggregating to cell level here, but check performance.
-	//logrus.Debug("Exited rasterBlockToS2")
 	return s2Data, nil
 }
 
-func aggToS2Cell(cellID s2.CellID, resMap map[s2.CellID][]float64, aggFunc ReduceFunction) S2CellData {
-	// TODO: Verify the validity of this solution (thanks copilot). It seems reasonable overall, but a little weird in places.
+func aggCellResults(resMap map[s2.CellID][]float64, aggFunc ReduceFunction) []S2CellData {
+	logrus.Debug("Entered aggCellResults")
+	var aggResults []S2CellData
+	for cellID := range resMap {
+		aggResults = append(aggResults, aggToS2Cell(cellID, resMap, aggFunc))
+	}
+	logrus.Debug("Exited aggCellResults")
+	return aggResults
+}
 
+func aggToS2Cell(cellID s2.CellID, resMap map[s2.CellID][]float64, aggFunc ReduceFunction) S2CellData {
 	values, ok := resMap[cellID]
 	if !ok {
 		logrus.Debugf("No values found for cell %v", cellID)
@@ -228,21 +221,21 @@ func GroupByCell(resCh <-chan S2CellData) map[s2.CellID][]float64 {
 	logrus.Debug("Entered GroupByCell")
 	var wg sync.WaitGroup
 	wg.Add(1)
-	out := make(map[s2.CellID][]float64)
+	outMap := make(map[s2.CellID][]float64)
 	go func() {
 		defer wg.Done()
 		for cellData := range resCh {
-			if _, ok := out[cellData.cell]; !ok {
-				out[cellData.cell] = []float64{cellData.data}
+			if _, ok := outMap[cellData.cell]; !ok {
+				outMap[cellData.cell] = []float64{cellData.data}
 			} else {
-				out[cellData.cell] = append(out[cellData.cell], cellData.data)
+				outMap[cellData.cell] = append(outMap[cellData.cell], cellData.data)
 			}
 		}
 		return
 	}()
 	wg.Wait()
 	logrus.Debug("Exited GroupByCell")
-	return out
+	return outMap
 }
 
 func getOriginAndResolution(ds *godal.Dataset) (Point, float64, float64, error) {
