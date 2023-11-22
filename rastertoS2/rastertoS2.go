@@ -1,4 +1,4 @@
-package main
+package rastertoS2
 
 import (
 	"errors"

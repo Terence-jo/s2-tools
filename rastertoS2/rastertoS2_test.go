@@ -1,4 +1,4 @@
-package main
+package rastertoS2
 
 import (
 	"github.com/airbusgeo/godal"
@@ -24,7 +24,11 @@ func TestPointToS2(t *testing.T) {
 
 func TestRasterBlockToS2(t *testing.T) {
 	ds := setUpRaster(t)
-	defer ds.Close()
+	defer func() {
+		if err := ds.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	origin, xRes, yRes, err := getOriginAndResolution(ds)
 	if err != nil {
 		t.Fatal(err)
@@ -36,16 +40,16 @@ func TestRasterBlockToS2(t *testing.T) {
 		XRes:   xRes,
 		YRes:   yRes,
 	}
-	s2Data, err := RasterBlockToS2(band, band.Band.Structure().FirstBlock())
+	s2Data, err := rasterBlockToS2(&band, band.Band.Structure().FirstBlock())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	want := []S2CellData{
-		{s2.CellID(1152921779484753920), []float64{1.0}},
-		{s2.CellID(1153105397926592512), []float64{2.0}},
-		{s2.CellID(1921714053521080320), []float64{3.0}},
-		{s2.CellID(1921892174404780032), []float64{4.0}},
+		{s2.CellID(1152921779484753920), 1.0},
+		{s2.CellID(1153105397926592512), 2.0},
+		{s2.CellID(1921714053521080320), 3.0},
+		{s2.CellID(1921892174404780032), 4.0},
 	}
 
 	// Compare the two
