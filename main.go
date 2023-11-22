@@ -8,7 +8,7 @@ import (
 
 func main() {
 	logrus.SetLevel(logrus.DebugLevel)
-	s2Data, err := RasterToS2("test.tif")
+	s2Data, err := RasterToS2("BHITiledUnCom.tif")
 	if err != nil {
 		logrus.Error(err)
 		return
@@ -30,7 +30,7 @@ func main() {
 		return
 	}
 	for i, cellData := range s2Data {
-		if i%1000 == 0 {
+		if i%10000 == 0 {
 			logrus.Infof("Writing cell %v", i)
 		}
 		if _, err := f.WriteString(fmt.Sprintf("%v,%v\n", int64(cellData.cell), cellData.data)); err != nil {

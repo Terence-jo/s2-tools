@@ -155,7 +155,10 @@ func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<
 	}
 	// Consider just passing these channels into rasterBlockToS2, avoiding the extra range
 	go func() {
-		for _, data := range blocksData {
+		for i, data := range blocksData {
+			if i%1000000 == 0 {
+				logrus.Debugf("Writing cell %v to channel", i)
+			}
 			resCh <- data
 		}
 		wg.Done()
@@ -165,7 +168,7 @@ func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<
 }
 
 func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, error) {
-	blockOrigin, err := blockOrigin(block, band.XRes, band.Origin)
+	blockOrigin, err := blockOrigin(block, []float64{band.XRes, band.YRes}, band.Origin)
 	if err != nil {
 		logrus.Error(err)
 		return nil, err
@@ -186,6 +189,9 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, 
 
 	for pix := 0; pix < block.W*block.H; pix++ {
 		value := blockBuf[pix]
+		if value == noData {
+			continue
+		}
 		// GDAL is row-major
 		row := pix / block.W
 		col := pix % block.W
@@ -196,12 +202,7 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, 
 		latLng := s2.LatLngFromDegrees(lat, lng)
 		s2Cell := s2.CellIDFromLatLng(latLng).Parent(s2Lvl)
 
-		var cellData S2CellData
-		if value == noData {
-			cellData = S2CellData{s2Cell, 0.0}
-		} else {
-			cellData = S2CellData{s2Cell, value}
-		}
+		cellData := S2CellData{s2Cell, value}
 		s2Data = append(s2Data, cellData)
 	}
 	// TODO: Consider aggregating to cell level here, but check performance.
@@ -261,8 +262,8 @@ func getOriginAndResolution(ds *godal.Dataset) (Point, float64, float64, error) 
 	return origin, xRes, yRes, nil
 }
 
-func blockOrigin(rasterBlock godal.Block, resolution float64, origin Point) (Point, error) {
-	originLng := float64(rasterBlock.X0)*resolution + origin.Lng
-	originLat := float64(rasterBlock.Y0)*resolution + origin.Lat
+func blockOrigin(rasterBlock godal.Block, resolution []float64, origin Point) (Point, error) {
+	originLng := float64(rasterBlock.X0)*resolution[0] + origin.Lng
+	originLat := float64(rasterBlock.Y0)*resolution[1] + origin.Lat
 	return Point{originLat, originLng}, nil
 }
