@@ -148,7 +148,8 @@ func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<
 		logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
 		newData, err := rasterBlockToS2(band, block)
 		if err != nil {
-			return
+			logrus.Error(err)
+			continue
 		}
 		blocksData = append(blocksData, newData...)
 	}
@@ -185,9 +186,6 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, 
 
 	for pix := 0; pix < block.W*block.H; pix++ {
 		value := blockBuf[pix]
-		if value == noData {
-			continue
-		}
 		// GDAL is row-major
 		row := pix / block.W
 		col := pix % block.W
@@ -197,7 +195,13 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, 
 
 		latLng := s2.LatLngFromDegrees(lat, lng)
 		s2Cell := s2.CellIDFromLatLng(latLng).Parent(s2Lvl)
-		cellData := S2CellData{s2Cell, value}
+
+		var cellData S2CellData
+		if value == noData {
+			cellData = S2CellData{s2Cell, 0.0}
+		} else {
+			cellData = S2CellData{s2Cell, value}
+		}
 		s2Data = append(s2Data, cellData)
 	}
 	// TODO: Consider aggregating to cell level here, but check performance.
