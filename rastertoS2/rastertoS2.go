@@ -176,11 +176,18 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, 
 		logrus.Error(err)
 		return nil, err
 	}
+	noData, ok := band.Band.NoData()
+	if !ok {
+		logrus.Warn("NoData not set")
+	}
 
 	var s2Data []S2CellData
 
 	for pix := 0; pix < block.W*block.H; pix++ {
 		value := blockBuf[pix]
+		if value == noData {
+			continue
+		}
 		// GDAL is row-major
 		row := pix / block.W
 		col := pix % block.W
