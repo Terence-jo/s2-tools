@@ -42,7 +42,7 @@ func TestRasterBlockToS2(t *testing.T) {
 	}
 
 	want := []S2CellData{
-		{s2.CellID(115292179484753920), 1.0},
+		{s2.CellID(1152921779484753920), 1.0},
 		{s2.CellID(1153105397926592512), 2.0},
 		{s2.CellID(1921714053521080320), 3.0},
 		{s2.CellID(1921892174404780032), 4.0},
