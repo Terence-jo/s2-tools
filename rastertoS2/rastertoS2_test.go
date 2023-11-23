@@ -40,9 +40,17 @@ func TestRasterBlockToS2(t *testing.T) {
 		XRes:   xRes,
 		YRes:   yRes,
 	}
-	s2Data, err := rasterBlockToS2(&band, band.Band.Structure().FirstBlock())
+	dataCh := make(chan S2CellData)
+	go func() {
+		err = rasterBlockToS2(&band, band.Band.Structure().FirstBlock(), dataCh)
+	}()
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	var s2Data []S2CellData
+	for data := range dataCh {
+		s2Data = append(s2Data, data)
 	}
 
 	want := []S2CellData{
@@ -53,76 +61,10 @@ func TestRasterBlockToS2(t *testing.T) {
 	}
 
 	// Compare the two
-	if !reflect.DeepEqual(s2Data, want) {
-		t.Errorf("got %v, want %v", s2Data, want)
+	if !reflect.DeepEqual(dataCh, want) {
+		t.Errorf("got %v, want %v", dataCh, want)
 	}
 }
-
-// func TestAggregations(t *testing.T) {
-// 	// With a faux-S2 table, assert that different aggregation
-// 	// functions produce the desired result.
-// 	s2Data := map[s2.CellID][]float64{
-// 		s2.CellID(1152921779484753920): {1.0, 1.0},
-// 		s2.CellID(1153105397926592512): {2.0, 3.0, 4.0},
-// 		s2.CellID(1921714053521080320): {3.0, 3.0, 3.0},
-// 		s2.CellID(1921892174404780032): {4.0, 10.0},
-// 	}
-// 	s2Table := S2Table{s2Data}
-//
-// 	aggResults := []struct {
-// 		name string
-// 		got  map[s2.CellID]float64
-// 		want map[s2.CellID]float64
-// 	}{
-// 		{
-// 			name: "mean",
-// 			got:  s2Table.Mean(),
-// 			want: map[s2.CellID]float64{
-// 				s2.CellID(1152921779484753920): 1.0,
-// 				s2.CellID(1153105397926592512): 3.0,
-// 				s2.CellID(1921714053521080320): 3.0,
-// 				s2.CellID(1921892174404780032): 7.0,
-// 			},
-// 		},
-// 		{
-// 			name: "sum",
-// 			got:  s2Table.Sum(),
-// 			want: map[s2.CellID]float64{
-// 				s2.CellID(1152921779484753920): 2.0,
-// 				s2.CellID(1153105397926592512): 9.0,
-// 				s2.CellID(1921714053521080320): 9.0,
-// 				s2.CellID(1921892174404780032): 14.0,
-// 			},
-// 		},
-// 		{
-// 			name: "count",
-// 			got:  s2Table.Count(),
-// 			want: map[s2.CellID]float64{
-// 				s2.CellID(1152921779484753920): 2.0,
-// 				s2.CellID(1153105397926592512): 3.0,
-// 				s2.CellID(1921714053521080320): 3.0,
-// 				s2.CellID(1921892174404780032): 2.0,
-// 			},
-// 		},
-// 		{
-// 			name: "majority",
-// 			got:  s2Table.Majority(),
-// 			want: map[s2.CellID]float64{
-// 				s2.CellID(1152921779484753920): 1.0,
-// 				s2.CellID(1153105397926592512): 2.0,
-// 				s2.CellID(1921714053521080320): 3.0,
-// 				s2.CellID(1921892174404780032): 4.0}},
-// 	}
-//
-// 	for _, tt := range aggResults {
-// 		t.Run(tt.name, func(t *testing.T) {
-// 			if !reflect.DeepEqual(tt.got, tt.want) {
-// 				t.Errorf("got %#v, want %#v", tt.got, tt.want)
-// 			}
-// 		})
-// 	}
-//
-// }
 
 func setUpRaster(t testing.TB) *godal.Dataset {
 	godal.RegisterAll()
@@ -133,7 +75,12 @@ func setUpRaster(t testing.TB) *godal.Dataset {
 		t.Fatal(err)
 	}
 	dsFile := tmpFile.Name()
-	defer os.Remove(dsFile)
+	defer func() {
+		err := os.Remove(dsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	// Create a raster
 	ds, _ := godal.Create(
