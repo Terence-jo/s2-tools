@@ -11,12 +11,16 @@ import (
 var indexrasterCmd = &cobra.Command{
 	Use:   "indexraster",
 	Short: "Convert a raster to S2 cells, aggregating over each cell",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Long: `Convert a GeoTIFF to a CSV (more options to follow) file
+	containing S2 cell IDs and aggregated values for the raster cells
+	contained.
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Options:
+		--numWorkers: Number of workers to spawn for parallel processing
+		--s2Lvl:			S2 cell level to generate results for. Essentially output resolution
+		--aggFunc:		Function to use when aggregating to S2 cell. Default is the mean,
+									choose from: mean, sum, max, min, majority, minority (ONLY mean
+									IMPLEMENTED AS OF YET)`,
 	Run: func(cmd *cobra.Command, args []string) {
 		cellData, err := rastertoS2.RasterToS2(args[0])
 		if err != nil {
