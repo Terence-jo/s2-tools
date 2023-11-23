@@ -80,21 +80,21 @@ func indexBand(bandWithInfo BandWithTransform, aggFunc ReduceFunction) ([]S2Cell
 	// upstream stages. Experiment with and without this.
 	done := make(chan struct{})
 	defer close(done)
-	var wg sync.WaitGroup
+	// var wg sync.WaitGroup // this WaitGroup is redundant. Might still want to figure out a robust way to ensure completion though.
 
 	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(&bandWithInfo, done)
 	// Parallel processing of each block produced above.
-	resCh, _ := processBlocks(&bandWithInfo, blocks)
+	resCh := processBlocks(&bandWithInfo, blocks)
 
 	// Because it just uses the seen map to deduplicate, this doesn't need the full set of
 	// cells to be passed in. It can just consume the channel as it comes in.
-	resMap := GroupByCell(resCh)
+	resMap := groupByCell(resCh)
 
 	// TODO: Figure out how to parallelize the aggregation step. This is the bottleneck.
 	aggResults := aggCellResults(resMap, aggFunc)
 
-	wg.Wait()
+	// wg.Wait() // redundant wait. groupByCell ensures that resCh gets drained.
 	return aggResults, nil
 }
 
@@ -110,6 +110,8 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 		defer close(blocks)
 		for block, ok := firstBlock, true; ok; block, ok = block.Next() {
 			select {
+			// TODO: Re-think the necessity of the done channel pattern. This isn't a streaming pipeline,
+			//			 and right now this isn't doing anything, because groupByCell could block and done wouldn't close.
 			case blocks <- block:
 			case <-done:
 				return
@@ -123,11 +125,10 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 // TODO: Think about implementing the done signal pattern here. Also, consider
 // whether aggFunc needs to be passed down to block level. Check performance
 // with and without.
-func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) (chan S2CellData, <-chan s2.CellID) {
+func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) chan S2CellData {
 	// TODO: Put processBlocks in here, and call it above after using this closure
-	logrus.Debug("Entered blockProcessor")
+	logrus.Debug("Entered processBlocks")
 	resCh := make(chan S2CellData)
-	idCh := make(chan s2.CellID)
 	var wg sync.WaitGroup
 
 	wg.Add(numWorkers)
@@ -139,11 +140,10 @@ func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) (chan S2C
 	go func() {
 		wg.Wait()
 		close(resCh)
-		close(idCh)
 	}()
 
 	logrus.Debug("Exited blockProcessor")
-	return resCh, idCh
+	return resCh
 }
 
 // TODO: Tidy this function signature. This is too many params.
@@ -223,8 +223,8 @@ func aggToS2Cell(cellID s2.CellID, resMap map[s2.CellID][]float64, aggFunc Reduc
 	return S2CellData{cellID, aggFunc(values...)}
 }
 
-func GroupByCell(resCh <-chan S2CellData) map[s2.CellID][]float64 {
-	logrus.Debug("Entered GroupByCell")
+func groupByCell(resCh <-chan S2CellData) map[s2.CellID][]float64 {
+	logrus.Debug("Entered groupByCell")
 	var wg sync.WaitGroup
 	wg.Add(1)
 	outMap := make(map[s2.CellID][]float64)
@@ -240,7 +240,7 @@ func GroupByCell(resCh <-chan S2CellData) map[s2.CellID][]float64 {
 		return
 	}()
 	wg.Wait()
-	logrus.Debug("Exited GroupByCell")
+	logrus.Debug("Exited groupByCell")
 	return outMap
 }
 
