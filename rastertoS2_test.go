@@ -30,27 +30,27 @@ func TestRasterBlockToS2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	band := BandWithInfo{
+	band := BandWithTransform{
 		Band:   &ds.Bands()[0],
 		Origin: origin,
 		XRes:   xRes,
 		YRes:   yRes,
 	}
-	s2Data, err := RasterBlockToS2(band, band.Band.Structure().FirstBlock())
+	s2Data, err := rasterBlockToS2(&band, band.Band.Structure().FirstBlock())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := map[s2.CellID][]float64{
-		s2.CellID(1152921779484753920): {1.0},
-		s2.CellID(1153105397926592512): {2.0},
-		s2.CellID(1921714053521080320): {3.0},
-		s2.CellID(1921892174404780032): {4.0},
+	want := []S2CellData{
+		{s2.CellID(1152921779484753920), 1.0},
+		{s2.CellID(1153105397926592512), 2.0},
+		{s2.CellID(1921714053521080320), 3.0},
+		{s2.CellID(1921892174404780032), 4.0},
 	}
 
 	// Compare the two
 	if !reflect.DeepEqual(s2Data, want) {
-		t.Errorf("")
+		t.Errorf("got %v, want %v", s2Data, want)
 	}
 }
 

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"sync"
+
 	"github.com/airbusgeo/godal"
 	"github.com/golang/geo/s2"
 	"github.com/sirupsen/logrus"
@@ -8,38 +11,47 @@ import (
 
 // TODO: Make level configurable on command line
 const s2Lvl int = 11
+const numWorkers = 8
 
 type Point struct {
 	Lat float64
 	Lng float64
 }
 
-type BandWithInfo struct {
+type BandWithTransform struct {
 	Band   *godal.Band
 	Origin Point
 	XRes   float64
 	YRes   float64
 }
 
-// TODO Investigate further possibilities for data structures here.
-// My map of slices implementation is servicable, but feels unwieldy.
 type S2CellData struct {
 	cell s2.CellID
-	data []float64
+	data float64
 }
-type S2Table map[s2.CellID][]float64
 
-type MapFunction func(...float64) float64
+type ReduceFunction func(...float64) float64
 
-func RasterToS2(path string) (S2Table, error) {
+func RasterToS2(path string) ([]S2CellData, error) {
 	godal.RegisterAll()
+
+	// TODO: make aggFunc cmd-line-configurable
+	aggFunc := func(inData ...float64) float64 {
+		var sum float64
+		for _, val := range inData {
+			sum += val
+		}
+		return sum / float64(len(inData))
+	}
 
 	ds, err := godal.Open(path)
 	if err != nil {
 		logrus.Error(err)
 		return nil, err
 	}
-	defer ds.Close()
+	defer func() {
+		err = errors.Join(err, ds.Close())
+	}()
 
 	origin, xRes, yRes, err := getOriginAndResolution(ds)
 	if err != nil {
@@ -47,9 +59,9 @@ func RasterToS2(path string) (S2Table, error) {
 	}
 
 	band := &ds.Bands()[0]
-	firstBlock := band.Structure().FirstBlock()
-	bandWithInfo := BandWithInfo{band, origin, xRes, yRes}
-	s2Data, err := IndexBand(bandWithInfo, firstBlock)
+	bandWithInfo := BandWithTransform{band, origin, xRes, yRes}
+
+	s2Data, err := indexBand(bandWithInfo, aggFunc)
 	if err != nil {
 		logrus.Error(err)
 		return nil, err
@@ -57,25 +69,106 @@ func RasterToS2(path string) (S2Table, error) {
 	return s2Data, nil
 }
 
-func IndexBand(bandWithInfo BandWithInfo, firstBlock godal.Block) (S2Table, error) {
-	s2Data := make(map[s2.CellID][]float64)
-	for rasterBlock, ok := firstBlock, true; ok; rasterBlock, ok = rasterBlock.Next() {
-		//TODO: Iterate through blocks with a goroutine. For now just loop.
-		logrus.Infof("Processing block at %v, %v", rasterBlock.X0, rasterBlock.Y0)
-		newData, err := RasterBlockToS2(bandWithInfo, rasterBlock)
-		if err != nil {
-			logrus.Error(err)
-			return nil, err
-		}
-		for cell, values := range newData {
-			s2Data = appendToS2Map(s2Data, cell, values...)
-		}
-	}
-	return s2Data, nil
+func indexBand(bandWithInfo BandWithTransform, aggFunc ReduceFunction) ([]S2CellData, error) {
+	// Set up a done channel that can signal time to close for the whole pipeline.
+	// Done will close when the pipeline exits, signalling that it is time to abandon
+	// upstream stages. Experiment with and without this.
+	done := make(chan struct{})
+	defer close(done)
+	var wg sync.WaitGroup
+
+	// Asynchronous generation of blocks to be consumed.
+	blocks := genBlocks(&bandWithInfo, done)
+	// Parallel processing of each block produced above.
+	resCh, _ := processBlocks(&bandWithInfo, blocks)
+
+	// Because it just uses the seen map to deduplicate, this doesn't need the full set of
+	// cells to be passed in. It can just consume the channel as it comes in.
+	resMap := GroupByCell(resCh)
+
+	// TODO: Figure out how to parallelize the aggregation step. This is the bottleneck.
+	aggResults := aggCellResults(resMap, aggFunc)
+
+	wg.Wait()
+	return aggResults, nil
 }
 
-func RasterBlockToS2(band BandWithInfo, block godal.Block) (map[s2.CellID][]float64, error) {
-	blockOrigin, err := blockOrigin(block, band.XRes, band.Origin)
+// Produce blocks from a raster band, putting them in a channel to be consumed
+// downstream. The production here is happening serially, but there would be
+// very little speedup from parallelising at this step.
+func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block {
+	logrus.Debug("Entered genBlocks")
+
+	blocks := make(chan godal.Block)
+	firstBlock := band.Band.Structure().FirstBlock()
+	go func() {
+		defer close(blocks)
+		for block, ok := firstBlock, true; ok; block, ok = block.Next() {
+			select {
+			case blocks <- block:
+			case <-done:
+				return
+			}
+		}
+	}()
+	logrus.Debug("Exited genBlocks")
+	return blocks
+}
+
+// TODO: Think about implementing the done signal pattern here. Also, consider
+// whether aggFunc needs to be passed down to block level. Check performance
+// with and without.
+func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) (chan S2CellData, <-chan s2.CellID) {
+	// TODO: Put processBlocks in here, and call it above after using this closure
+	logrus.Debug("Entered blockProcessor")
+	resCh := make(chan S2CellData)
+	idCh := make(chan s2.CellID)
+	var wg sync.WaitGroup
+
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go indexBlocks(band, blocks, resCh, &wg)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resCh)
+		close(idCh)
+	}()
+
+	logrus.Debug("Exited blockProcessor")
+	return resCh, idCh
+}
+
+// TODO: Tidy this function signature. This is too many params.
+func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<- S2CellData, wg *sync.WaitGroup) {
+	logrus.Debug("Entered indexBlocks")
+	var blocksData []S2CellData
+	for block := range blocks {
+		logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
+		newData, err := rasterBlockToS2(band, block)
+		if err != nil {
+			logrus.Error(err)
+			continue
+		}
+		blocksData = append(blocksData, newData...)
+	}
+	// Consider just passing these channels into rasterBlockToS2, avoiding the extra range
+	go func() {
+		for i, data := range blocksData {
+			if i%1000000 == 0 {
+				logrus.Debugf("Writing cell %v to channel", i)
+			}
+			resCh <- data
+		}
+		wg.Done()
+		logrus.Debug("Exited channel write")
+	}()
+	logrus.Debug("Exited indexBlocks")
+}
+
+func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, error) {
+	blockOrigin, err := blockOrigin(block, []float64{band.XRes, band.YRes}, band.Origin)
 	if err != nil {
 		logrus.Error(err)
 		return nil, err
@@ -87,11 +180,18 @@ func RasterBlockToS2(band BandWithInfo, block godal.Block) (map[s2.CellID][]floa
 		logrus.Error(err)
 		return nil, err
 	}
+	noData, ok := band.Band.NoData()
+	if !ok {
+		logrus.Warn("NoData not set")
+	}
 
-	s2Data := make(map[s2.CellID][]float64)
+	var s2Data []S2CellData
 
 	for pix := 0; pix < block.W*block.H; pix++ {
 		value := blockBuf[pix]
+		if value == noData {
+			continue
+		}
 		// GDAL is row-major
 		row := pix / block.W
 		col := pix % block.W
@@ -101,28 +201,53 @@ func RasterBlockToS2(band BandWithInfo, block godal.Block) (map[s2.CellID][]floa
 
 		latLng := s2.LatLngFromDegrees(lat, lng)
 		s2Cell := s2.CellIDFromLatLng(latLng).Parent(s2Lvl)
-		s2Data = appendToS2Map(s2Data, s2Cell, value)
+
+		cellData := S2CellData{s2Cell, value}
+		s2Data = append(s2Data, cellData)
 	}
+	// TODO: Consider aggregating to cell level here, but check performance.
 	return s2Data, nil
 }
 
-// TODO: Make this a concurrent pipeline stage
-func AggWithinCells(s2Data S2Table, fun MapFunction) map[s2.CellID]float64 {
-	out := make(map[s2.CellID]float64, len(s2Data))
-	for cell, data := range s2Data {
-		out[cell] = fun(data...)
+func aggCellResults(resMap map[s2.CellID][]float64, aggFunc ReduceFunction) []S2CellData {
+	logrus.Debug("Entered aggCellResults")
+	var aggResults []S2CellData
+	for cellID := range resMap {
+		aggResults = append(aggResults, aggToS2Cell(cellID, resMap, aggFunc))
 	}
-	return out
+	logrus.Debug("Exited aggCellResults")
+	return aggResults
 }
 
-func appendToS2Map(s2Data S2Table, s2Cell s2.CellID, values ...float64) S2Table {
-	oldData, ok := s2Data[s2Cell]
+func aggToS2Cell(cellID s2.CellID, resMap map[s2.CellID][]float64, aggFunc ReduceFunction) S2CellData {
+	values, ok := resMap[cellID]
 	if !ok {
-		s2Data[s2Cell] = values
-	} else {
-		s2Data[s2Cell] = append(oldData, values...)
+		logrus.Debugf("No values found for cell %v", cellID)
+		return S2CellData{cellID, 0}
 	}
-	return s2Data
+
+	return S2CellData{cellID, aggFunc(values...)}
+}
+
+func GroupByCell(resCh <-chan S2CellData) map[s2.CellID][]float64 {
+	logrus.Debug("Entered GroupByCell")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	outMap := make(map[s2.CellID][]float64)
+	go func() {
+		defer wg.Done()
+		for cellData := range resCh {
+			if _, ok := outMap[cellData.cell]; !ok {
+				outMap[cellData.cell] = []float64{cellData.data}
+			} else {
+				outMap[cellData.cell] = append(outMap[cellData.cell], cellData.data)
+			}
+		}
+		return
+	}()
+	wg.Wait()
+	logrus.Debug("Exited GroupByCell")
+	return outMap
 }
 
 func getOriginAndResolution(ds *godal.Dataset) (Point, float64, float64, error) {
@@ -137,8 +262,8 @@ func getOriginAndResolution(ds *godal.Dataset) (Point, float64, float64, error) 
 	return origin, xRes, yRes, nil
 }
 
-func blockOrigin(rasterBlock godal.Block, resolution float64, origin Point) (Point, error) {
-	originLng := float64(rasterBlock.X0)*resolution + origin.Lng
-	originLat := float64(rasterBlock.Y0)*resolution + origin.Lat
+func blockOrigin(rasterBlock godal.Block, resolution []float64, origin Point) (Point, error) {
+	originLng := float64(rasterBlock.X0)*resolution[0] + origin.Lng
+	originLat := float64(rasterBlock.Y0)*resolution[1] + origin.Lat
 	return Point{originLat, originLng}, nil
 }
