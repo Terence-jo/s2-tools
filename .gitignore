@@ -4,3 +4,4 @@ test.tif
 .DS_Store
 .idea*
 *.xml
+bin*
