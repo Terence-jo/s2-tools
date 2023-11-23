@@ -127,6 +127,7 @@ func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) (chan S2C
 
 	wg.Add(numWorkers)
 	for i := 0; i < numWorkers; i++ {
+		// This will run async, unique should be able to consume the channel as it comes in. TODO: Verify
 		go indexBlocks(band, blocks, resCh, &wg)
 	}
 
@@ -143,44 +144,43 @@ func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) (chan S2C
 // TODO: Tidy this function signature. This is too many params.
 func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<- S2CellData, wg *sync.WaitGroup) {
 	logrus.Debug("Entered indexBlocks")
-	var blocksData []S2CellData
 	for block := range blocks {
 		logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
-		newData, err := rasterBlockToS2(band, block)
+		err := rasterBlockToS2(band, block, resCh)
 		if err != nil {
-			return
+			logrus.Error(err)
+			continue
 		}
-		blocksData = append(blocksData, newData...)
 	}
-	// Consider just passing these channels into rasterBlockToS2, avoiding the extra range
-	go func() {
-		for _, data := range blocksData {
-			resCh <- data
-		}
-		wg.Done()
-		logrus.Debug("Exited channel write")
-	}()
+	wg.Done()
 	logrus.Debug("Exited indexBlocks")
 }
 
-func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, error) {
-	blockOrigin, err := blockOrigin(block, band.XRes, band.Origin)
+// TODO: Record error counts and return them. Need to know how many blocks were
+// processed, and how many failed.
+func rasterBlockToS2(band *BandWithTransform, block godal.Block, resCh chan<- S2CellData) error {
+	blockOrigin, err := blockOrigin(block, []float64{band.XRes, band.YRes}, band.Origin)
 	if err != nil {
 		logrus.Error(err)
-		return nil, err
+		return err
 	}
 	blockBuf := make([]float64, block.H*block.W)
 
 	// Read band into blockBuf
 	if err := band.Band.Read(block.X0, block.Y0, blockBuf, block.W, block.H); err != nil {
 		logrus.Error(err)
-		return nil, err
+		return err
 	}
-
-	var s2Data []S2CellData
+	noData, ok := band.Band.NoData()
+	if !ok {
+		logrus.Warn("NoData not set")
+	}
 
 	for pix := 0; pix < block.W*block.H; pix++ {
 		value := blockBuf[pix]
+		if value == noData {
+			continue
+		}
 		// GDAL is row-major
 		row := pix / block.W
 		col := pix % block.W
@@ -190,11 +190,12 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block) ([]S2CellData, 
 
 		latLng := s2.LatLngFromDegrees(lat, lng)
 		s2Cell := s2.CellIDFromLatLng(latLng).Parent(s2Lvl)
+
 		cellData := S2CellData{s2Cell, value}
-		s2Data = append(s2Data, cellData)
+		resCh <- cellData
 	}
 	// TODO: Consider aggregating to cell level here, but check performance.
-	return s2Data, nil
+	return nil
 }
 
 func aggCellResults(resMap map[s2.CellID][]float64, aggFunc ReduceFunction) []S2CellData {
@@ -250,8 +251,8 @@ func getOriginAndResolution(ds *godal.Dataset) (Point, float64, float64, error) 
 	return origin, xRes, yRes, nil
 }
 
-func blockOrigin(rasterBlock godal.Block, resolution float64, origin Point) (Point, error) {
-	originLng := float64(rasterBlock.X0)*resolution + origin.Lng
-	originLat := float64(rasterBlock.Y0)*resolution + origin.Lat
+func blockOrigin(rasterBlock godal.Block, resolution []float64, origin Point) (Point, error) {
+	originLng := float64(rasterBlock.X0)*resolution[0] + origin.Lng
+	originLat := float64(rasterBlock.Y0)*resolution[1] + origin.Lat
 	return Point{originLat, originLng}, nil
 }
