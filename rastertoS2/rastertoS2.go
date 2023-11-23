@@ -2,6 +2,7 @@ package rastertoS2
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/airbusgeo/godal"
@@ -28,6 +29,10 @@ type BandWithTransform struct {
 type S2CellData struct {
 	cell s2.CellID
 	data float64
+}
+
+func (c S2CellData) String() string {
+	return fmt.Sprintf("%v,%v", c.cell, c.data)
 }
 
 type ReduceFunction func(...float64) float64

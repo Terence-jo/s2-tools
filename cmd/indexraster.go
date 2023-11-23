@@ -22,7 +22,7 @@ to quickly create a Cobra application.`,
 		if err != nil {
 			panic(err)
 		}
-		err := cellsio.WriteToCSV(cellData, args[1])
+		err = cellsio.WriteToCSV(cellData, args[1])
 		if err != nil {
 			panic(err)
 		}
