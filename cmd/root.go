@@ -13,12 +13,9 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "s2-tools",
 	Short: "Tools for working with geospatial data and S2 cells",
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Long: `Currently only indexing of rasters is implemented, using the
+	'indexraster' subcommand:
+	./s2-tools indexraster [opts] [tif_file] [output_path]`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },
