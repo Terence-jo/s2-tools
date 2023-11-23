@@ -8,7 +8,7 @@ import (
 
 func main() {
 	logrus.SetLevel(logrus.DebugLevel)
-	s2Data, err := RasterToS2("BHITiledUnCom.tif")
+	s2Data, err := RasterToS2("seaBHITiledUnCom.tif")
 	if err != nil {
 		logrus.Error(err)
 		return
