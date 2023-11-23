@@ -32,7 +32,7 @@ type S2CellData struct {
 }
 
 func (c S2CellData) String() string {
-	return fmt.Sprintf("%v,%v", c.cell, c.data)
+	return fmt.Sprintf("%v,%v", int64(c.cell), c.data)
 }
 
 type ReduceFunction func(...float64) float64
