@@ -11,8 +11,6 @@ import (
 )
 
 // TODO: Make level configurable on command line
-const s2Lvl int = 11
-const numWorkers = 8
 
 type Point struct {
 	Lat float64
@@ -35,19 +33,18 @@ func (c S2CellData) String() string {
 	return fmt.Sprintf("%v,%v", int64(c.cell), c.data)
 }
 
-type ReduceFunction func(...float64) float64
+type AggFunc func(...float64) float64
 
-func RasterToS2(path string) ([]S2CellData, error) {
+var numWorkers int
+var s2Lvl int
+
+func RasterToS2(path string, aggFunc AggFunc, workers int, cellLevel int) ([]S2CellData, error) {
 	godal.RegisterAll()
+	// Bad pattern, this is lazy. Figure out something better
+	numWorkers = workers
+	s2Lvl = cellLevel
 
 	// TODO: make aggFunc cmd-line-configurable
-	aggFunc := func(inData ...float64) float64 {
-		var sum float64
-		for _, val := range inData {
-			sum += val
-		}
-		return sum / float64(len(inData))
-	}
 
 	ds, err := godal.Open(path)
 	if err != nil {
@@ -74,7 +71,7 @@ func RasterToS2(path string) ([]S2CellData, error) {
 	return s2Data, nil
 }
 
-func indexBand(bandWithInfo BandWithTransform, aggFunc ReduceFunction) ([]S2CellData, error) {
+func indexBand(bandWithInfo BandWithTransform, aggFunc AggFunc) ([]S2CellData, error) {
 	// Set up a done channel that can signal time to close for the whole pipeline.
 	// Done will close when the pipeline exits, signalling that it is time to abandon
 	// upstream stages. Experiment with and without this.
@@ -203,7 +200,7 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block, resCh chan<- S2
 	return nil
 }
 
-func aggCellResults(resMap map[s2.CellID][]float64, aggFunc ReduceFunction) []S2CellData {
+func aggCellResults(resMap map[s2.CellID][]float64, aggFunc AggFunc) []S2CellData {
 	logrus.Debug("Entered aggCellResults")
 	var aggResults []S2CellData
 	for cellID := range resMap {
@@ -213,7 +210,7 @@ func aggCellResults(resMap map[s2.CellID][]float64, aggFunc ReduceFunction) []S2
 	return aggResults
 }
 
-func aggToS2Cell(cellID s2.CellID, resMap map[s2.CellID][]float64, aggFunc ReduceFunction) S2CellData {
+func aggToS2Cell(cellID s2.CellID, resMap map[s2.CellID][]float64, aggFunc AggFunc) S2CellData {
 	values, ok := resMap[cellID]
 	if !ok {
 		logrus.Debugf("No values found for cell %v", cellID)
