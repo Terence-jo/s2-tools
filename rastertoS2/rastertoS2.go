@@ -10,8 +10,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// TODO: Make level configurable on command line
-
 type Point struct {
 	Lat float64
 	Lng float64
@@ -43,8 +41,6 @@ func RasterToS2(path string, aggFunc AggFunc, workers int, cellLevel int) ([]S2C
 	// Bad pattern, this is lazy. Figure out something better
 	numWorkers = workers
 	s2Lvl = cellLevel
-
-	// TODO: make aggFunc cmd-line-configurable
 
 	ds, err := godal.Open(path)
 	if err != nil {
@@ -119,18 +115,14 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 	return blocks
 }
 
-// TODO: Think about implementing the done signal pattern here. Also, consider
-// whether aggFunc needs to be passed down to block level. Check performance
-// with and without.
 func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) chan S2CellData {
-	// TODO: Put processBlocks in here, and call it above after using this closure
 	logrus.Debug("Entered processBlocks")
-	resCh := make(chan S2CellData)
+	struc := band.Band.Structure()
+	resCh := make(chan S2CellData, struc.SizeX*struc.SizeY) // Buffer for worst-case of 1 cell per pixel
 	var wg sync.WaitGroup
 
 	wg.Add(numWorkers)
 	for i := 0; i < numWorkers; i++ {
-		// This will run async, unique should be able to consume the channel as it comes in. TODO: Verify
 		go indexBlocks(band, blocks, resCh, &wg)
 	}
 
