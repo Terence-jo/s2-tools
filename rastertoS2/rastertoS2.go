@@ -138,6 +138,7 @@ func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) chan S2Ce
 // TODO: Tidy this function signature. This is too many params.
 func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<- S2CellData, wg *sync.WaitGroup) {
 	logrus.Debug("Entered indexBlocks")
+	defer wg.Done()
 	for block := range blocks {
 		logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
 		err := rasterBlockToS2(band, block, resCh)
@@ -146,7 +147,6 @@ func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<
 			continue
 		}
 	}
-	wg.Done()
 	logrus.Debug("Exited indexBlocks")
 }
 
@@ -162,7 +162,6 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block, resCh chan<- S2
 
 	// Read band into blockBuf
 	if err := band.Band.Read(block.X0, block.Y0, blockBuf, block.W, block.H); err != nil {
-		logrus.Error(err)
 		return err
 	}
 	noData, ok := band.Band.NoData()
@@ -188,7 +187,6 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block, resCh chan<- S2
 		cellData := S2CellData{s2Cell, value}
 		resCh <- cellData
 	}
-	// TODO: Consider aggregating to cell level here, but check performance.
 	return nil
 }
 

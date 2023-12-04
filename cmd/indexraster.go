@@ -21,8 +21,8 @@ var indexrasterCmd = &cobra.Command{
 	contained.
 
 	Use tiled rasters for best performance. Untiled rasters can exceed
-	memory limits when stripes are read. Currently only uncompressed GeoTIFFs
-	are supported.
+	memory limits when stripes are read. Currently only uncompressed,
+	or LZW-compressed GeoTIFFs are supported.
 
 	Options:
 		--numWorkers: Number of workers to spawn for parallel processing
