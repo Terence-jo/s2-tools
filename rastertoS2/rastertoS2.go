@@ -15,11 +15,12 @@ type Point struct {
 	Lng float64
 }
 
-type BandWithTransform struct {
+type BandContainer struct {
 	Band   *godal.Band
 	Origin Point
 	XRes   float64
 	YRes   float64
+	mu     sync.Mutex
 }
 
 type S2CellData struct {
@@ -57,9 +58,9 @@ func RasterToS2(path string, aggFunc AggFunc, workers int, cellLevel int) ([]S2C
 	}
 
 	band := &ds.Bands()[0]
-	bandWithInfo := BandWithTransform{band, origin, xRes, yRes}
+	bandWithInfo := BandContainer{band, origin, xRes, yRes, sync.Mutex{}}
 
-	s2Data, err := indexBand(bandWithInfo, aggFunc)
+	s2Data, err := indexBand(&bandWithInfo, aggFunc)
 	if err != nil {
 		logrus.Error(err)
 		return nil, err
@@ -67,7 +68,7 @@ func RasterToS2(path string, aggFunc AggFunc, workers int, cellLevel int) ([]S2C
 	return s2Data, nil
 }
 
-func indexBand(bandWithInfo BandWithTransform, aggFunc AggFunc) ([]S2CellData, error) {
+func indexBand(bandWithInfo *BandContainer, aggFunc AggFunc) ([]S2CellData, error) {
 	// Set up a done channel that can signal time to close for the whole pipeline.
 	// Done will close when the pipeline exits, signalling that it is time to abandon
 	// upstream stages. Experiment with and without this.
@@ -76,9 +77,9 @@ func indexBand(bandWithInfo BandWithTransform, aggFunc AggFunc) ([]S2CellData, e
 	// var wg sync.WaitGroup // this WaitGroup is redundant. Might still want to figure out a robust way to ensure completion though.
 
 	// Asynchronous generation of blocks to be consumed.
-	blocks := genBlocks(&bandWithInfo, done)
+	blocks := genBlocks(bandWithInfo, done)
 	// Parallel processing of each block produced above.
-	resCh := processBlocks(&bandWithInfo, blocks)
+	resCh := processBlocks(bandWithInfo, blocks)
 
 	// Because it just uses the seen map to deduplicate, this doesn't need the full set of
 	// cells to be passed in. It can just consume the channel as it comes in.
@@ -94,7 +95,7 @@ func indexBand(bandWithInfo BandWithTransform, aggFunc AggFunc) ([]S2CellData, e
 // Produce blocks from a raster band, putting them in a channel to be consumed
 // downstream. The production here is happening serially, but there would be
 // very little speedup from parallelising at this step.
-func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block {
+func genBlocks(band *BandContainer, done <-chan struct{}) <-chan godal.Block {
 	logrus.Debug("Entered genBlocks")
 
 	blocks := make(chan godal.Block)
@@ -115,7 +116,7 @@ func genBlocks(band *BandWithTransform, done <-chan struct{}) <-chan godal.Block
 	return blocks
 }
 
-func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) chan S2CellData {
+func processBlocks(band *BandContainer, blocks <-chan godal.Block) chan S2CellData {
 	logrus.Debug("Entered processBlocks")
 	struc := band.Band.Structure()
 	resCh := make(chan S2CellData, struc.SizeX*struc.SizeY) // Buffer for worst-case of 1 cell per pixel
@@ -136,7 +137,7 @@ func processBlocks(band *BandWithTransform, blocks <-chan godal.Block) chan S2Ce
 }
 
 // TODO: Tidy this function signature. This is too many params.
-func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<- S2CellData, wg *sync.WaitGroup) {
+func indexBlocks(band *BandContainer, blocks <-chan godal.Block, resCh chan<- S2CellData, wg *sync.WaitGroup) {
 	logrus.Debug("Entered indexBlocks")
 	defer wg.Done()
 	for block := range blocks {
@@ -152,7 +153,7 @@ func indexBlocks(band *BandWithTransform, blocks <-chan godal.Block, resCh chan<
 
 // TODO: Record error counts and return them. Need to know how many blocks were
 // processed, and how many failed.
-func rasterBlockToS2(band *BandWithTransform, block godal.Block, resCh chan<- S2CellData) error {
+func rasterBlockToS2(band *BandContainer, block godal.Block, resCh chan<- S2CellData) error {
 	blockOrigin, err := blockOrigin(block, []float64{band.XRes, band.YRes}, band.Origin)
 	if err != nil {
 		logrus.Error(err)
@@ -161,9 +162,10 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block, resCh chan<- S2
 	blockBuf := make([]float64, block.H*block.W)
 
 	// Read band into blockBuf
-	if err := band.Band.Read(block.X0, block.Y0, blockBuf, block.W, block.H); err != nil {
+	if err := lockedRead(band, block, blockBuf); err != nil {
 		return err
 	}
+
 	noData, ok := band.Band.NoData()
 	if !ok {
 		logrus.Warn("NoData not set")
@@ -186,6 +188,16 @@ func rasterBlockToS2(band *BandWithTransform, block godal.Block, resCh chan<- S2
 
 		cellData := S2CellData{s2Cell, value}
 		resCh <- cellData
+	}
+	return nil
+}
+
+// Locking is required to read from compressed rasters.
+func lockedRead(band *BandContainer, block godal.Block, blockBuf []float64) error {
+	band.mu.Lock()
+	defer band.mu.Unlock()
+	if err := band.Band.Read(block.X0, block.Y0, blockBuf, block.W, block.H); err != nil {
+		return err
 	}
 	return nil
 }

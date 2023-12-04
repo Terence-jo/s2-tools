@@ -5,6 +5,7 @@ import (
 	"github.com/golang/geo/s2"
 	"os"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -34,11 +35,12 @@ func TestRasterBlockToS2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	band := BandWithTransform{
+	band := BandContainer{
 		Band:   &ds.Bands()[0],
 		Origin: origin,
 		XRes:   xRes,
 		YRes:   yRes,
+		mu:     sync.Mutex{},
 	}
 	dataCh := make(chan S2CellData)
 	go func() {
