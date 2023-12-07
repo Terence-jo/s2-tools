@@ -1,4 +1,4 @@
-package rastertoS2
+package celltools
 
 import (
 	"errors"

@@ -3,10 +3,10 @@ package cellsio
 import (
 	"github.com/sirupsen/logrus"
 	"os"
-	"s2-tools/rastertoS2"
+	"s2-tools/celltools"
 )
 
-func WriteToCSV(cellData []rastertoS2.S2CellData, path string) error {
+func WriteToCSV(cellData []celltools.S2CellData, path string) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err

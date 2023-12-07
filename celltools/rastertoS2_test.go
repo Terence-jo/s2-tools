@@ -1,4 +1,4 @@
-package rastertoS2
+package celltools
 
 import (
 	"github.com/airbusgeo/godal"

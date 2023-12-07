@@ -1,4 +1,4 @@
-package rastertoS2
+package celltools
 
 func Mean(inData ...float64) float64 {
 	sum := Sum(inData...)
