@@ -25,11 +25,11 @@ var indexrasterCmd = &cobra.Command{
 	supported, but not tested.
 
 	Options:
-		--numWorkers: Number of workers to spawn for parallel processing
-		--s2Lvl:			S2 cell level to generate results for. Essentially output resolution
+		--numWorkers: Number of workers to spawn for parallel processing. Not recommended
+									to exceed number of CPU cores.
+		--s2Lvl:			S2 cell level to generate results for. Essentially output resolution.
 		--aggFunc:		Function to use when aggregating to S2 cell. Default is the mean,
-									choose from: mean, sum, max, min, majority, minority (ONLY mean
-									IMPLEMENTED AS OF YET)`,
+									choose from: mean, sum, max, min`,
 	Run: func(cmd *cobra.Command, args []string) {
 		setLogLevels()
 
@@ -51,8 +51,10 @@ func chooseAggFunc(funcFlag string) rastertoS2.AggFunc {
 		return rastertoS2.Mean
 	case "sum":
 		return rastertoS2.Sum
-	case "sumln":
-		return rastertoS2.SumLn
+	case "max":
+		return rastertoS2.Max
+	case "min":
+		return rastertoS2.Min
 	default:
 		logrus.Warnf("Aggregation function %s not recognized, using mean", funcFlag)
 		return rastertoS2.Mean
@@ -72,15 +74,6 @@ func init() {
 	rootCmd.AddCommand(indexrasterCmd)
 
 	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// indexrasterCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// indexrasterCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-
 	indexrasterCmd.Flags().IntVarP(&numWorkers, "numWorkers", "n", 8, "Number of workers to spawn for parallel processing")
 	err := viper.BindPFlag("numWorkers", indexrasterCmd.Flags().Lookup("numWorkers"))
 	if err != nil {

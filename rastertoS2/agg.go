@@ -1,7 +1,5 @@
 package rastertoS2
 
-import "math"
-
 func Mean(inData ...float64) float64 {
 	sum := Sum(inData...)
 	return sum / float64(len(inData))
@@ -15,10 +13,22 @@ func Sum(inData ...float64) float64 {
 	return sum
 }
 
-func SumLn(inData ...float64) float64 {
-	var sum float64
+func Max(inData ...float64) float64 {
+	var max float64
 	for _, val := range inData {
-		sum += math.Log(val)
+		if val > max {
+			max = val
+		}
 	}
-	return sum
+	return max
+}
+
+func Min(inData ...float64) float64 {
+	min := inData[0]
+	for _, val := range inData[1:] {
+		if val < min {
+			min = val
+		}
+	}
+	return min
 }
