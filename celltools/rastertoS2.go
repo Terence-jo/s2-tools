@@ -221,30 +221,6 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, resCh chan<- S2Cell
 	return nil
 }
 
-func wgs84GeomFromString(geomString string) (*godal.Geometry, error) {
-	srs, err := godal.NewSpatialRefFromEPSG(4326)
-	if err != nil {
-		return nil, err
-	}
-	geom, err := godal.NewGeometryFromWKT(geomString, srs)
-	if err != nil {
-		return nil, err
-	}
-	return geom, nil
-}
-
-func getUTMSpatialRef(lng float64, lat float64) (*godal.SpatialRef, error) {
-	utm := int(math.Ceil((lng + 180) / 6))
-	var utmSRS *godal.SpatialRef
-	var err error
-	if lat >= 0 {
-		utmSRS, err = godal.NewSpatialRefFromEPSG(32600 + utm)
-	} else {
-		utmSRS, err = godal.NewSpatialRefFromEPSG(32700 + utm)
-	}
-	return utmSRS, err
-}
-
 // Locking is required to read from compressed rasters.
 func lockedRead(band *BandContainer, block godal.Block, blockBuf []float64) error {
 	band.mu.Lock()
@@ -326,20 +302,4 @@ func haversinePixelWidth(latitude float64, resolution float64) float64 {
 	resRad := resolution * math.Pi / 180
 	a := math.Pow(math.Cos(latRad), 2) * math.Pow(math.Sin(resRad/2), 2)
 	return 2 * EarthRadius * math.Asin(math.Sqrt(a))
-}
-
-func cellToWKT(cell s2.Cell) string {
-	vertices := []Point{
-		{s2.LatLngFromPoint(cell.Vertex(0)).Lat.Degrees(), s2.LatLngFromPoint(cell.Vertex(0)).Lng.Degrees()},
-		{s2.LatLngFromPoint(cell.Vertex(1)).Lat.Degrees(), s2.LatLngFromPoint(cell.Vertex(1)).Lng.Degrees()},
-		{s2.LatLngFromPoint(cell.Vertex(2)).Lat.Degrees(), s2.LatLngFromPoint(cell.Vertex(2)).Lng.Degrees()},
-		{s2.LatLngFromPoint(cell.Vertex(3)).Lat.Degrees(), s2.LatLngFromPoint(cell.Vertex(3)).Lng.Degrees()},
-	}
-	geomString := fmt.Sprintf("POLYGON((%v %v, %v %v, %v %v, %v %v, %v %v))",
-		vertices[0].Lng, vertices[0].Lat,
-		vertices[1].Lng, vertices[1].Lat,
-		vertices[2].Lng, vertices[2].Lat,
-		vertices[3].Lng, vertices[3].Lat,
-		vertices[0].Lng, vertices[0].Lat)
-	return geomString
 }

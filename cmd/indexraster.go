@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"s2-tools/cellsio"
-	"s2-tools/rastertoS2"
+	"s2-tools/celltools"
 )
 
 var numWorkers int
@@ -34,7 +34,7 @@ var indexrasterCmd = &cobra.Command{
 		setLogLevels()
 
 		aggFunc := chooseAggFunc(viper.GetString("aggFunc"))
-		cellData, err := rastertoS2.RasterToS2(args[0], aggFunc, numWorkers, s2Lvl)
+		cellData, err := celltools.RasterToS2(args[0], aggFunc, numWorkers, s2Lvl)
 		if err != nil {
 			panic(err)
 		}
@@ -45,17 +45,15 @@ var indexrasterCmd = &cobra.Command{
 	},
 }
 
-func chooseAggFunc(funcFlag string) rastertoS2.AggFunc {
+func chooseAggFunc(funcFlag string) celltools.AggFunc {
 	switch funcFlag {
 	case "mean":
-		return rastertoS2.Mean
+		return celltools.Mean
 	case "sum":
-		return rastertoS2.Sum
-	case "sumln":
-		return rastertoS2.SumLn
+		return celltools.Sum
 	default:
 		logrus.Warnf("Aggregation function %s not recognized, using mean", funcFlag)
-		return rastertoS2.Mean
+		return celltools.Mean
 	}
 }
 func setLogLevels() {
