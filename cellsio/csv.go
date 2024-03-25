@@ -17,7 +17,7 @@ func WriteToCSV(cellData []celltools.S2CellData, path string) error {
 		}
 	}()
 
-	if _, err := f.WriteString("s2_id,value\n"); err != nil {
+	if _, err := f.WriteString("s2_id;value;geom\n"); err != nil {
 		return err
 	}
 

@@ -3,12 +3,15 @@ package celltools
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/airbusgeo/godal"
 	"github.com/golang/geo/s2"
 	"github.com/sirupsen/logrus"
 )
+
+const EarthRadius = 6371000
 
 type Point struct {
 	Lat float64
@@ -24,12 +27,20 @@ type BandContainer struct {
 }
 
 type S2CellData struct {
+	cell       s2.CellID
+	data       float64
+	geomString string
+}
+
+type S2CellGeom struct {
 	cell s2.CellID
-	data float64
+	geom string
 }
 
 func (c S2CellData) String() string {
-	return fmt.Sprintf("%v,%v", int64(c.cell), c.data)
+	cell := s2.CellFromCellID(c.cell)
+	geomString := cellToWKT(cell)
+	return fmt.Sprintf("%v;%v;%s", int64(c.cell), c.data, geomString)
 }
 
 type AggFunc func(...float64) float64
@@ -85,7 +96,6 @@ func indexBand(bandWithInfo *BandContainer, aggFunc AggFunc) ([]S2CellData, erro
 	// cells to be passed in. It can just consume the channel as it comes in.
 	resMap := groupByCell(resCh)
 
-	// TODO: Figure out how to parallelize the aggregation step. This is the bottleneck.
 	aggResults := aggCellResults(resMap, aggFunc)
 
 	// wg.Wait() // redundant wait. groupByCell ensures that resCh gets drained.
@@ -151,8 +161,6 @@ func indexBlocks(band *BandContainer, blocks <-chan godal.Block, resCh chan<- S2
 	logrus.Debug("Exited indexBlocks")
 }
 
-// TODO: Record error counts and return them. Need to know how many blocks were
-// processed, and how many failed.
 func rasterBlockToS2(band *BandContainer, block godal.Block, resCh chan<- S2CellData) error {
 	blockOrigin, err := blockOrigin(block, []float64{band.XRes, band.YRes}, band.Origin)
 	if err != nil {
@@ -180,16 +188,61 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, resCh chan<- S2Cell
 		row := pix / block.W
 		col := pix % block.W
 
-		lat := blockOrigin.Lat + float64(row)*band.YRes
-		lng := blockOrigin.Lng + float64(col)*band.XRes
+		lat := blockOrigin.Lat + (float64(row)+0.5)*band.YRes
+		lng := blockOrigin.Lng + (float64(col)+0.5)*band.XRes
+
+		pixArea := pixelArea(lat, band.XRes)
 
 		latLng := s2.LatLngFromDegrees(lat, lng)
 		s2Cell := s2.CellIDFromLatLng(latLng).Parent(s2Lvl)
+		geomString := cellToWKT(s2.CellFromCellID(s2Cell))
 
-		cellData := S2CellData{s2Cell, value}
+		utmSRS, err := getUTMSpatialRef(lng, lat)
+		if err != nil {
+			return err
+		}
+
+		geom, err := wgs84GeomFromString(geomString)
+		if err != nil {
+			return err
+		}
+
+		if err := geom.Reproject(utmSRS); err != nil {
+			return err
+		}
+		geomArea := geom.Area()
+		if geomArea < pixArea {
+			value = value * geom.Area() / pixArea
+		}
+
+		cellData := S2CellData{s2Cell, value, geomString}
 		resCh <- cellData
 	}
 	return nil
+}
+
+func wgs84GeomFromString(geomString string) (*godal.Geometry, error) {
+	srs, err := godal.NewSpatialRefFromEPSG(4326)
+	if err != nil {
+		return nil, err
+	}
+	geom, err := godal.NewGeometryFromWKT(geomString, srs)
+	if err != nil {
+		return nil, err
+	}
+	return geom, nil
+}
+
+func getUTMSpatialRef(lng float64, lat float64) (*godal.SpatialRef, error) {
+	utm := int(math.Ceil((lng + 180) / 6))
+	var utmSRS *godal.SpatialRef
+	var err error
+	if lat >= 0 {
+		utmSRS, err = godal.NewSpatialRefFromEPSG(32600 + utm)
+	} else {
+		utmSRS, err = godal.NewSpatialRefFromEPSG(32700 + utm)
+	}
+	return utmSRS, err
 }
 
 // Locking is required to read from compressed rasters.
@@ -202,38 +255,39 @@ func lockedRead(band *BandContainer, block godal.Block, blockBuf []float64) erro
 	return nil
 }
 
-func aggCellResults(resMap map[s2.CellID][]float64, aggFunc AggFunc) []S2CellData {
+func aggCellResults(resMap map[S2CellGeom][]float64, aggFunc AggFunc) []S2CellData {
 	logrus.Debug("Entered aggCellResults")
 	var aggResults []S2CellData
-	for cellID := range resMap {
-		aggResults = append(aggResults, aggToS2Cell(cellID, resMap, aggFunc))
+	for cellGeom := range resMap {
+		aggResults = append(aggResults, aggToS2Cell(cellGeom, resMap, aggFunc))
 	}
 	logrus.Debug("Exited aggCellResults")
 	return aggResults
 }
 
-func aggToS2Cell(cellID s2.CellID, resMap map[s2.CellID][]float64, aggFunc AggFunc) S2CellData {
-	values, ok := resMap[cellID]
+func aggToS2Cell(cellGeom S2CellGeom, resMap map[S2CellGeom][]float64, aggFunc AggFunc) S2CellData {
+	values, ok := resMap[cellGeom]
 	if !ok {
-		logrus.Debugf("No values found for cell %v", cellID)
-		return S2CellData{cellID, 0}
+		logrus.Debugf("No values found for cell %v", cellGeom)
+		return S2CellData{cellGeom.cell, 0, cellGeom.geom}
 	}
 
-	return S2CellData{cellID, aggFunc(values...)}
+	return S2CellData{cellGeom.cell, aggFunc(values...), cellGeom.geom}
 }
 
-func groupByCell(resCh <-chan S2CellData) map[s2.CellID][]float64 {
+func groupByCell(resCh <-chan S2CellData) map[S2CellGeom][]float64 {
 	logrus.Debug("Entered groupByCell")
 	var wg sync.WaitGroup
 	wg.Add(1)
-	outMap := make(map[s2.CellID][]float64)
+	outMap := make(map[S2CellGeom][]float64)
 	go func() {
 		defer wg.Done()
 		for cellData := range resCh {
-			if _, ok := outMap[cellData.cell]; !ok {
-				outMap[cellData.cell] = []float64{cellData.data}
+			cellGeom := S2CellGeom{cellData.cell, cellData.geomString}
+			if _, ok := outMap[cellGeom]; !ok {
+				outMap[cellGeom] = []float64{cellData.data}
 			} else {
-				outMap[cellData.cell] = append(outMap[cellData.cell], cellData.data)
+				outMap[cellGeom] = append(outMap[cellGeom], cellData.data)
 			}
 		}
 		return
@@ -259,4 +313,33 @@ func blockOrigin(rasterBlock godal.Block, resolution []float64, origin Point) (P
 	originLng := float64(rasterBlock.X0)*resolution[0] + origin.Lng
 	originLat := float64(rasterBlock.Y0)*resolution[1] + origin.Lat
 	return Point{originLat, originLng}, nil
+}
+
+func pixelArea(latitude float64, resolution float64) float64 {
+	pixWidth := haversinePixelWidth(latitude, resolution)
+	pixHeight := (math.Pi / 180) * resolution * EarthRadius
+	return pixWidth * pixHeight
+}
+
+func haversinePixelWidth(latitude float64, resolution float64) float64 {
+	latRad := latitude * math.Pi / 180
+	resRad := resolution * math.Pi / 180
+	a := math.Pow(math.Cos(latRad), 2) * math.Pow(math.Sin(resRad/2), 2)
+	return 2 * EarthRadius * math.Asin(math.Sqrt(a))
+}
+
+func cellToWKT(cell s2.Cell) string {
+	vertices := []Point{
+		{s2.LatLngFromPoint(cell.Vertex(0)).Lat.Degrees(), s2.LatLngFromPoint(cell.Vertex(0)).Lng.Degrees()},
+		{s2.LatLngFromPoint(cell.Vertex(1)).Lat.Degrees(), s2.LatLngFromPoint(cell.Vertex(1)).Lng.Degrees()},
+		{s2.LatLngFromPoint(cell.Vertex(2)).Lat.Degrees(), s2.LatLngFromPoint(cell.Vertex(2)).Lng.Degrees()},
+		{s2.LatLngFromPoint(cell.Vertex(3)).Lat.Degrees(), s2.LatLngFromPoint(cell.Vertex(3)).Lng.Degrees()},
+	}
+	geomString := fmt.Sprintf("POLYGON((%v %v, %v %v, %v %v, %v %v, %v %v))",
+		vertices[0].Lng, vertices[0].Lat,
+		vertices[1].Lng, vertices[1].Lat,
+		vertices[2].Lng, vertices[2].Lat,
+		vertices[3].Lng, vertices[3].Lat,
+		vertices[0].Lng, vertices[0].Lat)
+	return geomString
 }
