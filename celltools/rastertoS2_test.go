@@ -44,6 +44,7 @@ func TestRasterBlockToS2(t *testing.T) {
 	}
 	dataCh := make(chan S2CellData)
 	go func() {
+		defer close(dataCh)
 		err = rasterBlockToS2(&band, band.Band.Structure().FirstBlock(), dataCh)
 	}()
 	if err != nil {
@@ -55,16 +56,24 @@ func TestRasterBlockToS2(t *testing.T) {
 		s2Data = append(s2Data, data)
 	}
 
-	want := []S2CellData{
-		{s2.CellID(1152921779484753920), 1.0},
-		{s2.CellID(1153105397926592512), 2.0},
-		{s2.CellID(1921714053521080320), 3.0},
-		{s2.CellID(1921892174404780032), 4.0},
+	cells := []s2.CellID{
+		s2.CellID(1152921779484753920),
+		s2.CellID(1153105397926592512),
+		s2.CellID(1921714053521080320),
+		s2.CellID(1921892174404780032),
+	}
+	var want []S2CellData
+	for i, cell := range cells {
+		want = append(want, S2CellData{
+			cell:       cell,
+			data:       float64(i + 1),
+			geomString: cellToWKT(s2.CellFromCellID(cell)),
+		})
 	}
 
 	// Compare the two
-	if !reflect.DeepEqual(dataCh, want) {
-		t.Errorf("got %v, want %v", dataCh, want)
+	if !reflect.DeepEqual(s2Data, want) {
+		t.Errorf("got %v, \nwant %v", s2Data, want)
 	}
 }
 

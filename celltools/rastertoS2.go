@@ -38,9 +38,7 @@ type S2CellGeom struct {
 }
 
 func (c S2CellData) String() string {
-	cell := s2.CellFromCellID(c.cell)
-	geomString := cellToWKT(cell)
-	return fmt.Sprintf("%v;%v;%s", int64(c.cell), c.data, geomString)
+	return fmt.Sprintf("%v;%v;%s", int64(c.cell), c.data, c.geomString)
 }
 
 type AggFunc func(...float64) float64
@@ -188,7 +186,7 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, resCh chan<- S2Cell
 		row := pix / block.W
 		col := pix % block.W
 
-		lat := blockOrigin.Lat + (float64(row)+0.5)*band.YRes
+		lat := blockOrigin.Lat + (float64(row)-0.5)*band.YRes
 		lng := blockOrigin.Lng + (float64(col)+0.5)*band.XRes
 
 		pixArea := pixelArea(lat, band.XRes)
