@@ -1,0 +1,7 @@
+affine
+argparse
+numpy
+pandas
+rasterio
+tqdm
+shapely

@@ -6,3 +6,5 @@ scratch*
 *.xml
 bin*
 *.rb
+__pycache__/
+*.fgb

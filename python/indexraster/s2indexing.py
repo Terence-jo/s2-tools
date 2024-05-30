@@ -6,10 +6,10 @@ import numpy as np
 import rasterio
 import rasterio.features
 import affine
-import s2sphere
+import s2geometry
 from shapely.geometry import shape
 
-from s2utils import s2_rect_from_bounds, s2_to_shapely
+from indexraster.s2utils import s2_rect_from_bounds, s2_to_shapely
 
 EARTH_RADIUS = 6371000
 
@@ -36,9 +36,7 @@ class IndexingParams(NamedTuple):
     return_geom: bool
 
 
-def get_block_cells(
-        block: RasterBlockData, params: IndexingParams
-) -> List[S2CellData]:
+def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2CellData]:
     data, transform = block.data, block.transform
     block_origin = transform.c, transform.f
     block_res = transform.a
@@ -50,10 +48,10 @@ def get_block_cells(
     middle_row_lat = block_origin[1] - (data.shape[0] / 2) * block_res
     pixel_area = pixel_area_m2(middle_row_lat, block_res)
 
-    s2_coverer = s2sphere.RegionCoverer()
-    s2_coverer.min_level = params.lvl
-    s2_coverer.max_level = params.lvl
-    s2_coverer.max_cells = 100000
+    s2_coverer = s2geometry.S2RegionCoverer()
+    s2_coverer.set_min_level = params.lvl
+    s2_coverer.set_max_level = params.lvl
+    s2_coverer.set_max_cells = 100000
 
     try:
         s2_rect = s2_rect_from_bounds(block_bounds)
@@ -61,14 +59,17 @@ def get_block_cells(
         logger.error(f"Invalid bounds: {block_bounds}")
         return
 
-    covering = s2_coverer.get_covering(s2_rect)
+    covering = s2_coverer.GetCovering(s2_rect)
 
     out_cells = []
     for cell_id in covering:
         cell_geom = s2_to_shapely(cell_id)
         cell_mask = rasterio.features.geometry_mask(
-            [cell_geom], out_shape=data.shape, transform=transform, invert=True,
-            all_touched=True
+            [cell_geom],
+            out_shape=data.shape,
+            transform=transform,
+            invert=True,
+            all_touched=True,
         )
         data_under_cell = data[cell_mask & nodata_mask]
         if pixel_area > cell_geom.area:
@@ -82,20 +83,24 @@ def get_block_cells(
         geom_string = json.dumps(shape(cell_geom).__geo_interface__)
 
         if params.return_geom:
-            out_cells.append(S2CellData(
-                s2_id=cell_id.id(),
-                tags={"lvl": params.lvl},
-                value=float(value),
-                area=cell_geom.area,
-                geom=geom_string,
-            ))
+            out_cells.append(
+                S2CellData(
+                    s2_id=cell_id.id(),
+                    tags={"lvl": params.lvl},
+                    value=float(value),
+                    area=cell_geom.area,
+                    geom=geom_string,
+                )
+            )
         else:
-            out_cells.append(S2CellData(
-                s2_id=cell_id.id(),
-                tags={"lvl": params.lvl},
-                value=float(value),
-                area=cell_geom.area,
-            ))
+            out_cells.append(
+                S2CellData(
+                    s2_id=cell_id.id(),
+                    tags={"lvl": params.lvl},
+                    value=float(value),
+                    area=cell_geom.area,
+                )
+            )
     return out_cells
 
 
