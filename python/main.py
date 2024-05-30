@@ -50,7 +50,7 @@ def process_block(
         row["s2_id"] = s2_id_to_c_int(cell.s2_id)
         out_queue.put(row, False)
     t2 = time.perf_counter()
-    logger.info(f"Processed {len(cells)} cells in {t2 - t1} seconds")
+    logger.info(f"Formatted {len(cells)} cells in {t2 - t1} seconds")
 
 
 def main():
@@ -71,9 +71,7 @@ def main():
         out_data = []
         with Pool() as p:
             process = partial(process_block, params=params, out_queue=q)
-            results = tqdm(
-                p.imap(process, block_data, chunksize=10), total=total_blocks
-            )
+            results = tqdm(p.imap(process, block_data, chunksize=1), total=total_blocks)
             for result in results:
                 try:
                     row = q.get(False, timeout=10)
@@ -87,7 +85,7 @@ def main():
     out_df = (
         pd.DataFrame(out_data).groupby("s2_id").agg({"value": "sum", "geom": "first"})
     )
-    out_df.to_csv(args.outPath, index=False)
+    out_df.to_csv(args.outPath, index=False, sep=";")
 
 
 def generate_blocks(src) -> Iterable[s2indexing.RasterBlockData]:

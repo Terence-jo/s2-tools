@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import time
 from typing import NamedTuple, Dict, List
 import numpy as np
 import rasterio
@@ -9,7 +10,7 @@ import affine
 import s2geometry
 from shapely.geometry import shape
 
-from indexraster.s2utils import s2_rect_from_bounds, s2_to_shapely
+from indexraster.s2utils import s2_id_to_c_int, s2_rect_from_bounds, s2_to_shapely
 
 EARTH_RADIUS = 6371000
 
@@ -49,8 +50,8 @@ def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2Ce
     pixel_area = pixel_area_m2(middle_row_lat, block_res)
 
     s2_coverer = s2geometry.S2RegionCoverer()
-    s2_coverer.set_min_level = params.lvl
-    s2_coverer.set_max_level = params.lvl
+    s2_coverer.set_min_level(params.lvl)
+    s2_coverer.set_max_level(params.lvl)
     s2_coverer.set_max_cells = 100000
 
     try:
@@ -61,17 +62,25 @@ def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2Ce
 
     covering = s2_coverer.GetCovering(s2_rect)
 
+    cell_pairs = [(s2_to_shapely(cell), s2_id_to_c_int(cell.id())) for cell in covering]
+    cell_mask = rasterio.features.rasterize(
+        cell_pairs,
+        out_shape=data.shape,
+        transform=transform,
+        dtype=np.uint64,
+    )
+
     out_cells = []
-    for cell_id in covering:
-        cell_geom = s2_to_shapely(cell_id)
-        cell_mask = rasterio.features.geometry_mask(
-            [cell_geom],
-            out_shape=data.shape,
-            transform=transform,
-            invert=True,
-            all_touched=True,
-        )
-        data_under_cell = data[cell_mask & nodata_mask]
+    for cell_geom, cell_id in cell_pairs:
+        # cell_geom = s2_to_shapely(cell_id)
+        # cell_mask = rasterio.features.geometry_mask(
+        #     [cell_geom],
+        #     out_shape=data.shape,
+        #     transform=transform,
+        #     invert=True,
+        #     all_touched=True,
+        # )
+        data_under_cell = data[(cell_mask == cell_id) & nodata_mask]
         if pixel_area > cell_geom.area:
             value = data_under_cell.sum() * cell_geom.area / pixel_area
         else:
@@ -85,7 +94,7 @@ def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2Ce
         if params.return_geom:
             out_cells.append(
                 S2CellData(
-                    s2_id=cell_id.id(),
+                    s2_id=cell_id,
                     tags={"lvl": params.lvl},
                     value=float(value),
                     area=cell_geom.area,
@@ -95,7 +104,7 @@ def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2Ce
         else:
             out_cells.append(
                 S2CellData(
-                    s2_id=cell_id.id(),
+                    s2_id=cell_id,
                     tags={"lvl": params.lvl},
                     value=float(value),
                     area=cell_geom.area,
