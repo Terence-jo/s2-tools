@@ -1,0 +1,38 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File LU Layer",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+                "--inputPath",
+                "~/projects/qgis/flintbase-scratch/biodiv-layers/totalCurrentPotential.tif",
+                "--outPath",
+                "luPressure.csv",
+                "--chunkSize",
+                "100"
+            ]
+        },
+        {
+            "name": "Python Debugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+                "--inputPath",
+                "~/projects/qgis/flintbase-scratch/biodiv-layers/smallBI.tif",
+                "--outPath",
+                "test.csv",
+                "--chunkSize",
+                "1"
+            ]
+        }
+    ]
+}

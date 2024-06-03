@@ -7,8 +7,9 @@ import numpy as np
 import rasterio
 import rasterio.features
 import affine
-import s2geometry
+import s2sphere
 from shapely.geometry import shape
+import scipy.stats
 
 from indexraster.s2utils import s2_id_to_c_int, s2_rect_from_bounds, s2_to_shapely
 
@@ -49,26 +50,30 @@ def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2Ce
     middle_row_lat = block_origin[1] - (data.shape[0] / 2) * block_res
     pixel_area = pixel_area_m2(middle_row_lat, block_res)
 
-    s2_coverer = s2geometry.S2RegionCoverer()
-    s2_coverer.set_min_level(params.lvl)
-    s2_coverer.set_max_level(params.lvl)
-    s2_coverer.set_max_cells = 100000
+    s2_coverer = s2sphere.RegionCoverer()
+    s2_coverer.min_level = params.lvl
+    s2_coverer.max_level = params.lvl
+    s2_coverer.max_cells = 100000
 
     try:
         s2_rect = s2_rect_from_bounds(block_bounds)
     except AssertionError:
         logger.error(f"Invalid bounds: {block_bounds}")
-        return
+        return []
 
-    covering = s2_coverer.GetCovering(s2_rect)
+    covering = s2_coverer.get_covering(s2_rect)
 
     cell_pairs = [(s2_to_shapely(cell), s2_id_to_c_int(cell.id())) for cell in covering]
-    cell_mask = rasterio.features.rasterize(
-        cell_pairs,
-        out_shape=data.shape,
-        transform=transform,
-        dtype=np.uint64,
-    )
+    try:
+        cell_mask = rasterio.features.rasterize(
+            cell_pairs,
+            out_shape=data.shape,
+            transform=transform,
+            dtype=np.int64,
+        )
+    except Exception as e:
+        logger.error(f"Error rasterizing cells: {e}")
+        return []
 
     out_cells = []
     for cell_geom, cell_id in cell_pairs:
@@ -82,9 +87,13 @@ def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2Ce
         # )
         data_under_cell = data[(cell_mask == cell_id) & nodata_mask]
         if pixel_area > cell_geom.area:
-            value = data_under_cell.sum() * cell_geom.area / pixel_area
+            value = (
+                scipy.stats.mode(data_under_cell, axis=None).mode.squeeze()
+                * cell_geom.area
+                / pixel_area
+            )
         else:
-            value = data_under_cell.sum()
+            value = scipy.stats.mode(data_under_cell, axis=None).mode.squeeze()
         # counts = {
         #     val: np.count_nonzero(data_under_cell == val)
         #     for val in np.unique(data_under_cell)
