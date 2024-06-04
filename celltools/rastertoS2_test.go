@@ -1,12 +1,13 @@
 package celltools
 
 import (
-	"github.com/airbusgeo/godal"
-	"github.com/golang/geo/s2"
 	"os"
 	"reflect"
 	"sync"
 	"testing"
+
+	"github.com/airbusgeo/godal"
+	"github.com/golang/geo/s2"
 )
 
 func TestPointToS2(t *testing.T) {
@@ -24,6 +25,8 @@ func TestPointToS2(t *testing.T) {
 }
 
 func TestRasterBlockToS2(t *testing.T) {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	ds := setUpRaster(t)
 	defer func() {
 		if err := ds.Close(); err != nil {
@@ -36,16 +39,23 @@ func TestRasterBlockToS2(t *testing.T) {
 	}
 
 	band := BandContainer{
-		Band:   &ds.Bands()[0],
+		Band:   ds.Bands()[0],
 		Origin: origin,
 		XRes:   xRes,
 		YRes:   yRes,
-		mu:     sync.Mutex{},
+		mu:     &mu,
+		wg:     &wg,
+	}
+	opts := ConfigOpts{
+		NumWorkers: 1,
+		S2Lvl:      11,
+		AggFunc:    Mean,
+		MemLimit:   4,
 	}
 	dataCh := make(chan S2CellData)
 	go func() {
 		defer close(dataCh)
-		err = rasterBlockToS2(&band, band.Band.Structure().FirstBlock(), dataCh)
+		err = rasterBlockToS2(&band, band.Band.Structure().FirstBlock(), opts, dataCh)
 	}()
 	if err != nil {
 		t.Fatal(err)
@@ -65,9 +75,9 @@ func TestRasterBlockToS2(t *testing.T) {
 	var want []S2CellData
 	for i, cell := range cells {
 		want = append(want, S2CellData{
-			cell:       cell,
-			data:       float64(i + 1),
-			geomString: cellToWKT(s2.CellFromCellID(cell)),
+			Cell:       cell,
+			Data:       float64(i + 1),
+			GeomString: cellToWKT(s2.CellFromCellID(cell)),
 		})
 	}
 
