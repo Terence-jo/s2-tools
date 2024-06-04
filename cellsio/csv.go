@@ -1,12 +1,18 @@
 package cellsio
 
 import (
-	"github.com/sirupsen/logrus"
 	"os"
 	"s2-tools/celltools"
+	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
-func WriteToCSV(cellData []celltools.S2CellData, path string) error {
+func WriteToCSV(cellData chan celltools.S2CellData, path string, numWorkers int) error {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	workerPool := make(chan struct{}, numWorkers)
+
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -15,20 +21,36 @@ func WriteToCSV(cellData []celltools.S2CellData, path string) error {
 		if err := f.Close(); err != nil {
 			logrus.Error(err)
 		}
+		close(workerPool)
 	}()
 
 	if _, err := f.WriteString("s2_id;value;geom\n"); err != nil {
 		return err
 	}
 
-	for i, cell := range cellData {
-		if i%10000 == 0 {
-			logrus.Infof("Writing cell %d", i)
-		}
-		if _, err := f.WriteString(cell.String() + "\n"); err != nil {
-			return err
-		}
+	var j int
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go func() error {
+			defer wg.Done()
+			for cell := range cellData {
+				j++
+				printProgress := j%100000 == 0
+				row := cell.String()
+				if printProgress {
+					logrus.Infof("Writing cell %d", j)
+				}
+
+				mu.Lock()
+				if _, err := f.WriteString(row + "\n"); err != nil {
+					return err
+				}
+				mu.Unlock()
+			}
+			return nil
+		}()
 	}
+	wg.Wait()
 	if err = f.Sync(); err != nil {
 		return err
 	}

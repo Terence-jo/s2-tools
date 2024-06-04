@@ -2,13 +2,15 @@
 package cmd
 
 import (
+	"s2-tools/cellsio"
+	"s2-tools/celltools"
+
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"s2-tools/cellsio"
-	"s2-tools/celltools"
 )
 
+var memLimit int
 var numWorkers int
 var s2Lvl int
 
@@ -33,13 +35,20 @@ var indexrasterCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		setLogLevels()
 
-		aggFunc := chooseAggFunc(viper.GetString("aggFunc"))
-		cellData, err := celltools.RasterToS2(args[0], aggFunc, numWorkers, s2Lvl)
-		if err != nil {
-			panic(err)
+		sink := func(cellData chan celltools.S2CellData) error {
+			return cellsio.StreamToParquet(cellData, args[1], numWorkers)
 		}
-		err = cellsio.WriteToCSV(cellData, args[1])
-		if err != nil {
+
+		aggFunc := chooseAggFunc(viper.GetString("aggFunc"))
+
+		opts := celltools.ConfigOpts{
+			NumWorkers: numWorkers,
+			S2Lvl:      s2Lvl,
+			AggFunc:    aggFunc,
+			MemLimit:   memLimit,
+		}
+
+		if err := celltools.RasterToS2(args[0], opts, sink); err != nil {
 			panic(err)
 		}
 	},
@@ -51,6 +60,10 @@ func chooseAggFunc(funcFlag string) celltools.AggFunc {
 		return celltools.Mean
 	case "sum":
 		return celltools.Sum
+	case "max":
+		return celltools.Max
+	case "min":
+		return celltools.Min
 	default:
 		logrus.Warnf("Aggregation function %s not recognized, using mean", funcFlag)
 		return celltools.Mean
@@ -84,6 +97,12 @@ func init() {
 
 	indexrasterCmd.Flags().StringP("aggFunc", "a", "mean", "Function to use when aggregating to S2 cell. Default is the mean, choose from: mean, sum, sumln")
 	err = viper.BindPFlag("aggFunc", indexrasterCmd.Flags().Lookup("aggFunc"))
+	if err != nil {
+		logrus.Exit(1)
+	}
+
+	indexrasterCmd.Flags().IntVarP(&memLimit, "memLimitGB", "m", 8, "Memory limit in GB for raster processing")
+	err = viper.BindPFlag("memLimitGB", indexrasterCmd.Flags().Lookup("memLimitGB"))
 	if err != nil {
 		logrus.Exit(1)
 	}

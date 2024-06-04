@@ -59,10 +59,13 @@ def process_block(
 
 
 def main():
-    ibis.options.default_backend = "duckdb"
+    con = ibis.duckdb.connect()
     return_geom = args.returnGeom
     params = s2indexing.IndexingParams(
-        lvl=int(args.s2lvl), nodata=float(args.nodata), return_geom=return_geom
+        lvl=int(args.s2lvl),
+        nodata=float(args.nodata),
+        return_geom=return_geom,
+        agg_func=s2indexing.AggFuncEnum.MAX,
     )
 
     m = Manager()
@@ -94,13 +97,18 @@ def main():
 
     print("Processing finished, aggregating and writing...")
 
-    out_df = ibis.memtable(out_data, columns=["s2_id", "value", "geometry"]).aggregate(
-        by=["s2_id"],
-        value=lambda x: x.value.mode(),
-        geometry=lambda x: x.geometry.first(),
-    )
-    print(out_df)
-    out_df.to_parquet(args.outPath)
+    if return_geom:
+        out_df = ibis.memtable(out_data, columns=["s2_id", "value", "geom"]).aggregate(
+            by=["s2_id"],
+            value=lambda x: x.value.max(),
+            geometry=lambda x: x.geom.first(),
+        )
+    else:
+        out_df = ibis.memtable(out_data, columns=["s2_id", "value"]).aggregate(
+            by=["s2_id"],
+            value=lambda x: x.value.max(),
+        )
+    con.to_parquet(out_df, args.outPath)
 
 
 def generate_blocks(src) -> Iterable[s2indexing.RasterBlockData]:

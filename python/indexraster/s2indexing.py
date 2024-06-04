@@ -1,8 +1,9 @@
+import enum
 import json
 import logging
 import math
 import time
-from typing import NamedTuple, Dict, List
+from typing import Callable, NamedTuple, Dict, List
 import numpy as np
 import rasterio
 import rasterio.features
@@ -24,6 +25,15 @@ class RasterBlockData(NamedTuple):
 logger = logging.getLogger(__name__)
 
 
+class AggFuncEnum(enum.Enum):
+    MAX = np.max
+    MIN = np.min
+    MEAN = np.mean
+    MEDIAN = np.median
+    SUM = np.sum
+    MODE = scipy.stats.mode
+
+
 class S2CellData(NamedTuple):
     s2_id: int
     tags: Dict
@@ -35,9 +45,12 @@ class S2CellData(NamedTuple):
 class IndexingParams(NamedTuple):
     lvl: int
     nodata: float
+    agg_func: AggFuncEnum
     return_geom: bool
 
 
+# NOTE: This rasterizing cells method is only useful when pixels are smaller than cells.
+# If pixels are larger than cells, we should just use the pixel coordinates, like in the Go code.
 def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2CellData]:
     data, transform = block.data, block.transform
     block_origin = transform.c, transform.f
@@ -77,30 +90,21 @@ def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2Ce
 
     out_cells = []
     for cell_geom, cell_id in cell_pairs:
-        # cell_geom = s2_to_shapely(cell_id)
-        # cell_mask = rasterio.features.geometry_mask(
-        #     [cell_geom],
-        #     out_shape=data.shape,
-        #     transform=transform,
-        #     invert=True,
-        #     all_touched=True,
-        # )
         data_under_cell = data[(cell_mask == cell_id) & nodata_mask]
-        if pixel_area > cell_geom.area:
-            value = (
-                scipy.stats.mode(data_under_cell, axis=None).mode.squeeze()
-                * cell_geom.area
-                / pixel_area
-            )
+        if data_under_cell.size == 0:
+            continue
+        if not pixel_area > cell_geom.area or not params.agg_func == AggFuncEnum.SUM:
+            value = params.agg_func(data_under_cell)
         else:
-            value = scipy.stats.mode(data_under_cell, axis=None).mode.squeeze()
+            value = params.agg_func(data_under_cell) * cell_geom.area / pixel_area
+        # TODO: Restyle this section to allow mix-and-match of agg methods.
         # counts = {
         #     val: np.count_nonzero(data_under_cell == val)
         #     for val in np.unique(data_under_cell)
         # }
-        geom_string = json.dumps(shape(cell_geom).__geo_interface__)
 
         if params.return_geom:
+            geom_string = json.dumps(shape(cell_geom).__geo_interface__)
             out_cells.append(
                 S2CellData(
                     s2_id=cell_id,
