@@ -15,6 +15,8 @@
                 "-v",
                 "--numWorkers",
                 "12",
+                "--aggFunc",
+                "mean",
                 "--s2Lvl",
                 "11",
                 "/Users/tjo/projects/qgis/flintbase-scratch/biodiv-layers/minshort_speciestargetswithPA_esh10km_repruns10_ranked.tif",

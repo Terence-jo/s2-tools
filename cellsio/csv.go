@@ -8,7 +8,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func WriteToCSV(cellData chan celltools.S2CellData, path string, numWorkers int) error {
+// TODO: Use batches and the memory limit like in the parquet writer.
+func StreamToCSV(cellData chan celltools.S2CellData, path string, numWorkers int, memLimitGB int) error {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	workerPool := make(chan struct{}, numWorkers)

@@ -9,7 +9,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const RowBufferSize = 10000
+const (
+	CellRowSize = 8 + 8 + 19*5 + 11
+	BytesInGB   = 1024 * 1024 * 1024
+)
 
 type CellRow struct {
 	S2id  int64   `parquet:"s2_id, type=INT64"`
@@ -17,7 +20,7 @@ type CellRow struct {
 	Geom  string  `parquet:"geom, type=UTF8"`
 }
 
-func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers int) error {
+func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers int, memLimitGB int) error {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -39,24 +42,30 @@ func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers
 
 	var j int
 	wg.Add(numWorkers)
+	// Attempting to limit memory usage by flushing data to disk every rowBufferSize rows.
+	// The 2.5 is a fudge factor based on observations.
+	rowBufferSize := (memLimitGB * BytesInGB / CellRowSize) / int(float32(celltools.DataDuplicationFactor+numWorkers)*2.5)
 	for i := 0; i < numWorkers; i++ {
 		go func() error {
 			defer wg.Done()
-			var rowBuf []CellRow
+			rowBuf := make([]CellRow, rowBufferSize)
 			for cell := range cellData {
-				flushData := (j > 0) && (j%RowBufferSize == 0)
+				flushData := ((j+1)%rowBufferSize == 0)
 				if flushData {
 					logrus.Infof("Writing cell %d", j)
 					mu.Lock()
 					if _, err := writer.Write(rowBuf); err != nil {
 						return err
 					}
+					if err = writer.Flush(); err != nil {
+						return err
+					}
 					mu.Unlock()
-					rowBuf = []CellRow{}
+					rowBuf = make([]CellRow, rowBufferSize)
 				}
 
 				row := CellRow{int64(cell.Cell), cell.Data, cell.GeomString}
-				rowBuf = append(rowBuf, row)
+				rowBuf[j%rowBufferSize] = row
 				j++
 			}
 			return nil

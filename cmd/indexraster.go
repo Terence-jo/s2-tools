@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"path"
 	"s2-tools/cellsio"
 	"s2-tools/celltools"
 
@@ -36,16 +37,24 @@ var indexrasterCmd = &cobra.Command{
 		setLogLevels()
 
 		sink := func(cellData chan celltools.S2CellData) error {
-			return cellsio.StreamToParquet(cellData, args[1], numWorkers)
+			switch path.Ext(args[1]) {
+			case ".csv":
+				return cellsio.StreamToCSV(cellData, args[1], numWorkers, memLimit)
+			case ".parquet":
+				return cellsio.StreamToParquet(cellData, args[1], numWorkers, memLimit)
+			default:
+				return cellsio.StreamToParquet(cellData, args[1], numWorkers, memLimit)
+			}
 		}
 
 		aggFunc := chooseAggFunc(viper.GetString("aggFunc"))
 
 		opts := celltools.ConfigOpts{
-			NumWorkers: numWorkers,
-			S2Lvl:      s2Lvl,
-			AggFunc:    aggFunc,
-			MemLimit:   memLimit,
+			NumWorkers:  numWorkers,
+			S2Lvl:       s2Lvl,
+			AggFunc:     aggFunc,
+			MemLimit:    memLimit,
+			IsExtensive: aggFunc.IsExtensive(),
 		}
 
 		if err := celltools.RasterToS2(args[0], opts, sink); err != nil {

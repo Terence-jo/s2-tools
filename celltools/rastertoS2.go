@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"sync"
 	"time"
 
@@ -17,13 +18,18 @@ const (
 	CellWKTSize  int     = 19*5 + 11
 	CellDataSize int     = CellWKTSize + 16
 	BytesInGB    int     = 1024 * 1024 * 1024
+	// Cell data simultaneously exists in four places in rasterBlockToS2:
+	// 1. In the block buffer, 2. In the results slice, 3. In the grouped results map,
+	// 4. In the resCh channel. This is a factor of 4.
+	DataDuplicationFactor int = 4
 )
 
 type ConfigOpts struct {
-	NumWorkers int
-	S2Lvl      int
-	AggFunc    AggFunc
-	MemLimit   int
+	NumWorkers  int
+	S2Lvl       int
+	AggFunc     AggFunc
+	MemLimit    int
+	IsExtensive bool
 }
 
 type Point struct {
@@ -56,6 +62,24 @@ func (c S2CellData) String() string {
 }
 
 type AggFunc func(...float64) float64
+
+func (f AggFunc) IsExtensive() bool {
+	smallVals := []float64{
+		f(1, 2, 3),
+		f(1, 1, 1),
+		f(-1, -1, -1),
+		f(0, 0, 0),
+		f(-1, -2, -3),
+	}
+	largeVals := []float64{
+		f(1, 1, 2, 2, 3, 3),
+		f(1, 1, 1, 1, 1, 1),
+		f(-1, -1, -1, -1, -1, -1),
+		f(0, 0, 0, 0, 0, 0),
+		f(-1, -1, -2, -2, -3, -3),
+	}
+	return !reflect.DeepEqual(smallVals, largeVals)
+}
 
 var numWorkers int
 var s2Lvl int
@@ -100,11 +124,6 @@ func RasterToS2(path string, opts ConfigOpts, sink func(chan S2CellData) error) 
 }
 
 func indexBand(bandWithInfo *BandContainer, opts ConfigOpts) (chan S2CellData, error) {
-	// Set up a done channel that can signal time to close for the whole pipeline.
-	// Done will close when the pipeline exits, signalling that it is time to abandon
-	// upstream stages. Experiment with and without this.
-	// var wg sync.WaitGroup // this WaitGroup is redundant. Might still want to figure out a robust way to ensure completion though.
-
 	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(bandWithInfo)
 	// Parallel processing of each block produced above.
@@ -114,8 +133,7 @@ func indexBand(bandWithInfo *BandContainer, opts ConfigOpts) (chan S2CellData, e
 }
 
 // Produce blocks from a raster band, putting them in a channel to be consumed
-// downstream. The production here is happening serially, but there would be
-// very little speedup from parallelising at this step.
+// downstream.
 func genBlocks(band *BandContainer) <-chan godal.Block {
 	logrus.Debug("Entered genBlocks")
 
@@ -133,8 +151,7 @@ func genBlocks(band *BandContainer) <-chan godal.Block {
 
 func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOpts) chan S2CellData {
 	logrus.Debug("Entered processBlocks")
-	bufferSize := opts.MemLimit * BytesInGB / CellDataSize
-	resCh := make(chan S2CellData, bufferSize)
+	resCh := make(chan S2CellData)
 
 	for i := 0; i < numWorkers; i++ {
 		go indexBlocks(band, blocks, opts, resCh)
@@ -203,7 +220,7 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts, re
 
 		// S2 areas are in steradians, so we need to convert to square meters.
 		cellArea := s2.CellFromCellID(s2Cell).ApproxArea() * EarthRadius * EarthRadius
-		if cellArea < pixArea {
+		if (cellArea < pixArea) && opts.IsExtensive {
 			value = value * cellArea / pixArea
 		}
 
