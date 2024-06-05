@@ -4,6 +4,7 @@ import logging
 import math
 import time
 from typing import Callable, NamedTuple, Dict, List
+from duckdb import aggregate
 import numpy as np
 import rasterio
 import rasterio.features
@@ -123,6 +124,59 @@ def get_block_cells(block: RasterBlockData, params: IndexingParams) -> List[S2Ce
                     area=cell_geom.area,
                 )
             )
+    return out_cells
+
+
+def index_blocks_pixelwise(
+    block: RasterBlockData, params: IndexingParams
+) -> List[S2CellData]:
+    data, transform = block.data, block.transform
+    block_origin = transform.c, transform.f
+    block_res = transform.a
+    pixel_area_m = pixel_area_m2(block_origin[1], block_res)
+
+    cells = []
+    for i in range(data.shape[0]):
+        for j in range(data.shape[1]):
+            if data[i, j] == params.nodata:
+                continue
+            pixel_lon = block_origin[0] + (j + 0.5) * block_res
+            pixel_lat = block_origin[1] - (i + 0.5) * block_res
+            cell_id = s2sphere.CellId.from_lat_lng(
+                s2sphere.LatLng.from_degrees(pixel_lat, pixel_lon)
+            )
+            cells.append(
+                S2CellData(
+                    cell_id.parent(params.lvl).id(),
+                    {"lvl": params.lvl},
+                    data[i, j],
+                    pixel_area_m,
+                )
+            )
+            # yield int(data[i, j]), cell_id.parent(params.lvl).id(), pixel_area_m
+    cells = aggregate_cells(cells, params.agg_func)
+    return cells
+
+
+def aggregate_cells(cells: List[S2CellData], agg_func: Callable) -> List[S2CellData]:
+    tags = cells[0].tags
+    cell_dict = {}
+    for cell in cells:
+        if cell.s2_id in cell_dict:
+            cell_dict[cell.s2_id].append(cell.value)
+        else:
+            cell_dict[cell.s2_id] = [cell.value]
+    out_cells = []
+    for cell_id, values in cell_dict.items():
+        out_cells.append(
+            S2CellData(
+                s2_id=cell_id,
+                tags=tags,
+                value=float(agg_func(np.asarray(values))),
+                # TODO: Separate pixelwise thematic versus numeric aggregation. This area is bogus.
+                area=cell.area,
+            )
+        )
     return out_cells
 
 

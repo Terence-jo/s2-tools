@@ -11,6 +11,7 @@ import (
 	"github.com/airbusgeo/godal"
 	"github.com/golang/geo/s2"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 )
 
 const (
@@ -119,7 +120,7 @@ func RasterToS2(path string, opts ConfigOpts, sink func(chan S2CellData) error) 
 
 	sink(s2Data)
 	wg.Wait()
-	logrus.Infof("Indexing took %v", time.Since(startTime))
+	fmt.Printf("\nIndexing took %v", time.Since(startTime))
 	return nil
 }
 
@@ -138,11 +139,19 @@ func genBlocks(band *BandContainer) <-chan godal.Block {
 	logrus.Debug("Entered genBlocks")
 
 	blocks := make(chan godal.Block)
-	firstBlock := band.Band.Structure().FirstBlock()
+	struc := band.Band.Structure()
+	firstBlock := struc.FirstBlock()
+	numBlocks := (struc.SizeX * struc.SizeY) / (struc.BlockSizeX * struc.BlockSizeY)
+	var i int
 	go func() {
 		defer close(blocks)
 		for block, ok := firstBlock, true; ok; block, ok = block.Next() {
 			blocks <- block
+			i++
+			if !viper.GetBool("verbose") {
+				// If verbose is set, we'll be getting a flood of output from the workers.
+				fmt.Printf("\rProcessing block %d of %d", i, numBlocks)
+			}
 		}
 	}()
 	logrus.Debug("Exited genBlocks")
@@ -182,16 +191,27 @@ func indexBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOpts
 }
 
 func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts, resCh chan S2CellData) error {
+	results, err := readBlockToCells(block, band, opts)
+	if err != nil {
+		return err
+	}
+	groupedResults := groupByCell(results)
+	aggCellResults(groupedResults, opts.AggFunc, resCh)
+
+	return nil
+}
+
+func readBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) ([]S2CellData, error) {
 	blockOrigin, err := blockOrigin(block, []float64{band.XRes, band.YRes}, band.Origin)
 	if err != nil {
 		logrus.Error(err)
-		return err
+		return nil, err
 	}
+	// Read band into blockBuf
 	blockBuf := make([]float64, block.H*block.W)
 
-	// Read band into blockBuf
 	if err := lockedRead(band, block, blockBuf); err != nil {
-		return err
+		return nil, err
 	}
 
 	noData, ok := band.Band.NoData()
@@ -205,6 +225,7 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts, re
 		if value == noData {
 			continue
 		}
+
 		// GDAL is row-major
 		row := pix / block.W
 		col := pix % block.W
@@ -227,10 +248,7 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts, re
 		cellData := S2CellData{s2Cell, value, geomString}
 		results = append(results, cellData)
 	}
-	groupedResults := groupByCell(results)
-	aggCellResults(groupedResults, opts.AggFunc, resCh)
-
-	return nil
+	return results, nil
 }
 
 // Locking is required to read from compressed rasters.
