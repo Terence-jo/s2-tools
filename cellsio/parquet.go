@@ -40,13 +40,14 @@ func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers
 		}
 	}()
 
-	var j int
 	wg.Add(numWorkers)
 	// Attempting to limit memory usage by flushing data to disk every rowBufferSize rows.
-	// The 2.5 is a fudge factor based on observations.
-	rowBufferSize := (memLimitGB * BytesInGB / CellRowSize) / int(float32(celltools.DataDuplicationFactor+numWorkers)*2.5)
+	// Some allocation is just accumulating over iterations, I should try to figure out what it is.
+	// The 3 is a fudge factor to accomodate this based on observations.
+	rowBufferSize := (memLimitGB * BytesInGB / CellRowSize) / ((celltools.DataDuplicationFactor*numWorkers + numWorkers) * 3)
 	for i := 0; i < numWorkers; i++ {
 		go func() error {
+			var j int
 			defer wg.Done()
 			rowBuf := make([]CellRow, rowBufferSize)
 			for cell := range cellData {
