@@ -73,6 +73,8 @@ func chooseAggFunc(funcFlag string) celltools.AggFunc {
 		return celltools.Max
 	case "min":
 		return celltools.Min
+	case "mode":
+		return celltools.Mode
 	default:
 		logrus.Warnf("Aggregation function %s not recognized, using mean", funcFlag)
 		return celltools.Mean

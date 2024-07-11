@@ -2,8 +2,9 @@ package celltools
 
 import (
 	"fmt"
-	"github.com/airbusgeo/godal"
 	"math"
+
+	"github.com/airbusgeo/godal"
 
 	"github.com/golang/geo/s2"
 )

@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	CellRowSize = 8 + 8 + 19*5 + 11
-	BytesInGB   = 1024 * 1024 * 1024
+	CellRowSize   = 8 + 8 + 19*5 + 11
+	BytesInGB     = 1024 * 1024 * 1024
+	RowBufferSize = 10000
 )
 
 type CellRow struct {
@@ -43,15 +44,14 @@ func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers
 	wg.Add(numWorkers)
 	// Attempting to limit memory usage by flushing data to disk every rowBufferSize rows.
 	// Some allocation is just accumulating over iterations, I should try to figure out what it is.
-	// The 3 is a fudge factor to accomodate this based on observations.
-	rowBufferSize := (memLimitGB * BytesInGB / CellRowSize) / ((celltools.DataDuplicationFactor*numWorkers + numWorkers) * 3)
+	// rowBufferSize := (memLimitGB * BytesInGB / CellRowSize) / ((celltools.DataDuplicationFactor*numWorkers + numWorkers) * 6)
 	for i := 0; i < numWorkers; i++ {
 		go func() error {
 			var j int
 			defer wg.Done()
-			rowBuf := make([]CellRow, rowBufferSize)
+			rowBuf := make([]CellRow, RowBufferSize)
 			for cell := range cellData {
-				flushData := ((j+1)%rowBufferSize == 0)
+				flushData := ((j+1)%RowBufferSize == 0)
 				if flushData {
 					logrus.Infof("Writing cell %d", j)
 					mu.Lock()
@@ -62,11 +62,11 @@ func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers
 						return err
 					}
 					mu.Unlock()
-					rowBuf = make([]CellRow, rowBufferSize)
+					rowBuf = make([]CellRow, RowBufferSize)
 				}
 
 				row := CellRow{int64(cell.Cell), cell.Data, cell.GeomString}
-				rowBuf[j%rowBufferSize] = row
+				rowBuf[j%RowBufferSize] = row
 				j++
 			}
 			return nil

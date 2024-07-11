@@ -32,3 +32,19 @@ func Min(inData ...float64) float64 {
 	}
 	return min
 }
+
+func Mode(inData ...float64) float64 {
+	counts := make(map[float64]int)
+	for _, val := range inData {
+		counts[val]++
+	}
+	var mode float64
+	var maxCount int
+	for val, count := range counts {
+		if count > maxCount {
+			mode = val
+			maxCount = count
+		}
+	}
+	return mode
+}
