@@ -1,9 +1,0 @@
-affine
-argparse
-numpy
-pandas
-rasterio
-tqdm
-shapely
-scipy
-s2sphere

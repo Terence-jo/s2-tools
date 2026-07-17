@@ -16,7 +16,7 @@ const (
 )
 
 type CellRow struct {
-	S2id  int64   `parquet:"s2_id, type=INT64"`
+	S2ID  int64   `parquet:"s2_id, type=INT64"`
 	Value float64 `parquet:"value, type=DOUBLE"`
 	Geom  string  `parquet:"geom, type=UTF8"`
 }
@@ -43,14 +43,14 @@ func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers
 
 	wg.Add(numWorkers)
 	// Attempting to limit memory usage by flushing data to disk every rowBufferSize rows.
-	// Some allocation is just accumulating over iterations, I should try to figure out what it is.
-	// rowBufferSize := (memLimitGB * BytesInGB / CellRowSize) / ((celltools.DataDuplicationFactor*numWorkers + numWorkers) * 6)
 	for i := 0; i < numWorkers; i++ {
 		go func() error {
 			var j int
 			defer wg.Done()
 			rowBuf := make([]CellRow, RowBufferSize)
 			for cell := range cellData {
+				row := CellRow{int64(cell.Cell), cell.Data, cell.GeomString}
+				rowBuf[j%RowBufferSize] = row
 				flushData := ((j+1)%RowBufferSize == 0)
 				if flushData {
 					logrus.Infof("Writing cell %d", j)
@@ -64,11 +64,16 @@ func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers
 					mu.Unlock()
 					rowBuf = make([]CellRow, RowBufferSize)
 				}
-
-				row := CellRow{int64(cell.Cell), cell.Data, cell.GeomString}
-				rowBuf[j%RowBufferSize] = row
 				j++
 			}
+			mu.Lock()
+			if _, err := writer.Write(rowBuf[:j%RowBufferSize]); err != nil {
+				return err
+			}
+			if err = writer.Flush(); err != nil {
+				return err
+			}
+			mu.Unlock()
 			return nil
 		}()
 	}

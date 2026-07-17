@@ -26,7 +26,6 @@ func TestPointToS2(t *testing.T) {
 
 func TestRasterBlockToS2(t *testing.T) {
 	var mu sync.Mutex
-	var wg sync.WaitGroup
 	ds := setUpRaster(t)
 	defer func() {
 		if err := ds.Close(); err != nil {
@@ -39,12 +38,11 @@ func TestRasterBlockToS2(t *testing.T) {
 	}
 
 	band := BandContainer{
-		Band:   ds.Bands()[0],
-		Origin: origin,
-		XRes:   xRes,
-		YRes:   yRes,
-		mu:     &mu,
-		wg:     &wg,
+		&mu,
+		ds.Bands()[0],
+		origin,
+		xRes,
+		yRes,
 	}
 	opts := ConfigOpts{
 		NumWorkers: 1,
@@ -55,12 +53,12 @@ func TestRasterBlockToS2(t *testing.T) {
 	dataCh := make(chan S2CellData)
 	go func() {
 		defer close(dataCh)
-		err = rasterBlockToS2(&band, band.Band.Structure().FirstBlock(), opts, dataCh)
+		cellsMap, err := rasterBlockToS2(&band, band.Band.Structure().FirstBlock(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		aggCellResults(cellsMap, opts.AggFunc, dataCh)
 	}()
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	var s2Data []S2CellData
 	for data := range dataCh {
 		s2Data = append(s2Data, data)

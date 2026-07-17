@@ -1,5 +1,7 @@
 package celltools
 
+import "math"
+
 func Mean(inData ...float64) float64 {
 	sum := Sum(inData...)
 	return sum / float64(len(inData))
@@ -14,23 +16,29 @@ func Sum(inData ...float64) float64 {
 }
 
 func Max(inData ...float64) float64 {
-	var max float64
+	if len(inData) == 0 {
+		return math.NaN()
+	}
+	maxVal := inData[0]
 	for _, val := range inData {
-		if val > max {
-			max = val
+		if val > maxVal {
+			maxVal = val
 		}
 	}
-	return max
+	return maxVal
 }
 
 func Min(inData ...float64) float64 {
-	min := inData[0]
+	if len(inData) == 0 {
+		return math.NaN()
+	}
+	minVal := inData[0]
 	for _, val := range inData[1:] {
-		if val < min {
-			min = val
+		if val < minVal {
+			minVal = val
 		}
 	}
-	return min
+	return minVal
 }
 
 func Mode(inData ...float64) float64 {

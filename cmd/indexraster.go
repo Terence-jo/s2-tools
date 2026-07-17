@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"fmt"
 	"path"
 	"s2-tools/cellsio"
 	"s2-tools/celltools"
@@ -17,7 +18,7 @@ var s2Lvl int
 
 // indexrasterCmd represents the indexraster command
 var indexrasterCmd = &cobra.Command{
-	Use:   "indexraster",
+	Use:   "indexraster [flags] inputRaster output",
 	Short: "Convert a raster to S2 cells, aggregating over each cell",
 	Long: `Convert a GeoTIFF to a CSV (more options to follow) file
 	containing S2 cell IDs and aggregated values for the raster cells
@@ -33,7 +34,7 @@ var indexrasterCmd = &cobra.Command{
 		--s2Lvl:			S2 cell level to generate results for. Essentially output resolution.
 		--aggFunc:		Function to use when aggregating to S2 cell. Default is the mean,
 									choose from: mean, sum, max, min`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		setLogLevels()
 
 		sink := func(cellData chan celltools.S2CellData) error {
@@ -55,11 +56,16 @@ var indexrasterCmd = &cobra.Command{
 			AggFunc:     aggFunc,
 			MemLimit:    memLimit,
 			IsExtensive: aggFunc.IsExtensive(),
+			Verbose:     viper.GetBool("verbose"),
 		}
 
+		if len(args) == 0 {
+			return fmt.Errorf("indexraster requires two arguments")
+		}
 		if err := celltools.RasterToS2(args[0], opts, sink); err != nil {
 			panic(err)
 		}
+		return nil
 	},
 }
 
